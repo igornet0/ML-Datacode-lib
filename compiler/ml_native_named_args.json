@@ -1,0 +1,40 @@
+{
+  "param_lists": {
+    "train": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "x_val",
+      "y_val"
+    ],
+    "train_sh": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "monitor",
+      "patience",
+      "min_delta",
+      "restore_best",
+      "x_val",
+      "y_val"
+    ],
+    "freeze": [],
+    "unfreeze": []
+  },
+  "aliases": {
+    "nn_train": "train",
+    "train": "train",
+    "nn_train_sh": "train_sh",
+    "train_sh": "train_sh"
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "datacode_ml_compiler"
+version = "0.1.0"
+edition = "2021"
+description = "Compile-time ML native named-arg metadata for DataCode (sourced from ML-Datacode-lib)"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
