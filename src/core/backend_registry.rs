@@ -63,14 +63,70 @@ impl BackendRegistry {
         devices
     }
 
-    /// Автоматически выбрать лучшее доступное устройство
+    /// Автоматически выбрать лучшее доступное устройство (должно совпадать с [`crate::Device::default`]).
+    /// macOS: Metal при наличии, иначе CPU. Linux/Windows: CUDA при наличии, иначе CPU.
     pub fn auto_select(&self) -> &'static str {
-        if self.metal {
-            "metal"
-        } else if self.cuda {
-            "cuda"
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            if self.metal {
+                "metal"
+            } else {
+                "cpu"
+            }
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            if self.cuda {
+                "cuda"
+            } else {
+                "cpu"
+            }
+        }
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        )))]
+        {
+            let _ = (self.metal, self.cuda);
             "cpu"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackendRegistry;
+
+    #[test]
+    fn auto_select_cpu_when_no_gpu_backends() {
+        let r = BackendRegistry {
+            cpu: true,
+            metal: false,
+            cuda: false,
+        };
+        assert_eq!(r.auto_select(), "cpu");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn auto_select_macos_prefers_metal_when_available() {
+        let r = BackendRegistry {
+            cpu: true,
+            metal: true,
+            cuda: false,
+        };
+        assert_eq!(r.auto_select(), "metal");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn auto_select_linux_windows_prefers_cuda_when_available() {
+        let r = BackendRegistry {
+            cpu: true,
+            metal: false,
+            cuda: true,
+        };
+        assert_eq!(r.auto_select(), "cuda");
     }
 }

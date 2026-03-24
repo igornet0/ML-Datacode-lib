@@ -279,6 +279,10 @@ pub fn shim_devices(args: &[AbiValue]) -> AbiValue {
     crate::abi_shim::shim_with(crate::natives::native_devices, args)
 }
 
+pub fn shim_available_backends(args: &[AbiValue]) -> AbiValue {
+    crate::abi_shim::shim_with(crate::natives::native_devices, args)
+}
+
 pub fn shim_ml_validate_model(args: &[AbiValue]) -> AbiValue {
     crate::abi_shim::shim_with(crate::natives::native_ml_validate_model, args)
 }
@@ -376,6 +380,7 @@ extern "C" fn register_ml_exports(ctx: *mut datacode_abi::VmContext) {
     datacode_sdk::dc_fn!(&mut m, "nn_set_device", shim_nn_set_device);
     datacode_sdk::dc_fn!(&mut m, "nn_get_device", shim_nn_get_device);
     datacode_sdk::dc_fn!(&mut m, "devices", shim_devices);
+    datacode_sdk::dc_fn!(&mut m, "available_backends", shim_available_backends);
     datacode_sdk::dc_fn!(&mut m, "ml_validate_model", shim_ml_validate_model);
     datacode_sdk::dc_fn!(&mut m, "ml_model_info", shim_ml_model_info);
     datacode_sdk::dc_fn!(&mut m, "model_info", shim_model_info);

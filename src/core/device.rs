@@ -25,7 +25,8 @@ type CandleCudaDevice = candle_core::Device;
 type CandleMetalDevice = candle_core::Device;
 
 impl Device {
-    /// Get the default device (auto-detect GPU if available, otherwise CPU)
+    /// Get the default device (auto-detect GPU if available, otherwise CPU).
+    /// Matches [`crate::backend_registry::BackendRegistry::auto_select`] logic: CUDA on Linux/Windows, Metal on macOS.
     pub fn default() -> Self {
         #[cfg(feature = "gpu")]
         {

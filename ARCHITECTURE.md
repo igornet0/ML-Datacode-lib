@@ -67,3 +67,21 @@ flowchart TD
 
 - `datacode_abi` / `datacode_sdk` — локальные пути в этом репозитории. Типы модуля (`DatacodeModule` с `export_table` + `register`, `PluginOpaque` в `AbiValue` и т.д.) должны **совпадать** с копией ABI в основном репозитории DataCode VM, иначе загрузка `libml` из VM даст UB при чтении дескриптора.
 - Опционально `data-code` (feature `data-code-table`) и **dev-dependency** для интеграционных тестов — путь задаётся в [`Cargo.toml`](Cargo.toml) (соседний checkout `../DataCode` рядом с этим репозиторием; раньше использовался `../..` для вложенного `ml` внутри дерева DataCode).
+
+## Каналы сборки (артефакты) и выбор GPU
+
+Один бинарник не покрывает все ОС и драйверы: Metal (macOS) и CUDA (Linux/Windows) задаются **разными** Cargo features. Практика — выпускать **отдельные** артефакты и класть нужный в `<env>/packages/ml/` (или `.dcmodule`):
+
+| Канал | Команда сборки | Содержимое |
+|-------|----------------|------------|
+| **ml-cpu** | `cargo build --release` | Только CPU (без Candle GPU) |
+| **ml-metal** | `cargo build --release --features metal` | macOS + Metal |
+| **ml-cuda** | `cargo build --release --features cuda` | Linux/Windows + CUDA |
+
+Файл для VM: `target/release/libml.dylib` / `libml.so` / `ml.dll`. Упаковка в `ml.dcmodule`: каталог с `manifest.json` + библиотека, затем `dpm pack` (см. `Datacode_rep/docs/dcmodule_artifact.md`).
+
+### Поведение в рантайме (`auto` / `gpu`)
+
+- [`BackendRegistry`](src/core/backend_registry.rs) проверяет: feature при сборке **и** доступность устройства (`Device::new_metal` / `new_cuda`).
+- [`Device::default`](src/core/device.rs) и `BackendRegistry::auto_select()` согласованы: на **macOS** приоритет Metal, на **Linux/Windows** — CUDA, иначе CPU.
+- В скриптах: `ml_set_device("auto")` и `ml_set_device("gpu")` выбирают тот же backend, что и `auto_select`. При недоступном GPU `ml_set_device` для явного `metal`/`cuda` **переходит на CPU** с предупреждением; список доступных: `ml.devices()` / `ml.available_backends()`.

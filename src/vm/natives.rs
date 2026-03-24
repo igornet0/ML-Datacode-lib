@@ -2508,11 +2508,39 @@ pub fn native_categorical_cross_entropy_loss(args: &[Value]) -> Value {
     }
 }
 
+fn ml_set_global_device(device: Device) -> Value {
+    GLOBAL_ML_DEVICE.with(|global_device| {
+        *global_device.borrow_mut() = Some(device.clone());
+    });
+    Value::String(device.name().to_string())
+}
+
+/// Fallback to CPU with a unified warning (requested name, detail, registry list).
+fn ml_fallback_cpu_with_warning(
+    requested: &str,
+    detail: impl std::fmt::Display,
+    registry: &crate::backend_registry::BackendRegistry,
+) -> Value {
+    use crate::native_error::set_native_error;
+    let avail = registry.available_devices().join(", ");
+    let msg = format!(
+        "Device '{}' unavailable ({}). Available: [{}]. Falling back to CPU.",
+        requested,
+        detail,
+        avail
+    );
+    set_native_error(msg);
+    ml_set_global_device(Device::Cpu)
+}
+
 /// Set default device for ML operations
-/// ml_set_device("cpu") or ml_set_device("cuda") or ml_set_device("metal") or ml_set_device("auto")
-/// Returns device name as string on success, null on error
-/// Automatically falls back to CPU if GPU device is requested but not available
+/// ml_set_device("cpu"|"cuda"|"metal"|"auto"|"gpu") — `gpu` and `auto` pick the best backend for this OS (see BackendRegistry::auto_select).
+/// Returns device name as string on success, null on unknown device.
+/// Falls back to CPU with a warning if a GPU backend was requested but is not compiled in or not available at runtime.
 pub fn native_ml_set_device(args: &[Value]) -> Value {
+    use crate::backend_registry::BackendRegistry;
+    use crate::native_error::set_native_error;
+
     if args.len() != 1 {
         return Value::Null;
     }
@@ -2522,36 +2550,50 @@ pub fn native_ml_set_device(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match Device::from_str(device_str) {
-        Ok(device) => {
-            // Store device in global state
-            GLOBAL_ML_DEVICE.with(|global_device| {
-                *global_device.borrow_mut() = Some(device.clone());
-            });
-            Value::String(device.name().to_string())
-        }
-        Err(e) => {
-            // Auto-fallback to CPU if GPU device is requested but not available
-            if device_str == "metal" || device_str == "cuda" || device_str == "gpu" {
-                // Fallback to CPU and print warning
-                use crate::native_error::set_native_error;
-                let warning_msg = format!(
-                    "GPU device '{}' not available ({}). Falling back to CPU.",
-                    device_str, e
+    let registry = BackendRegistry::detect();
+
+    // "auto" and "gpu" → same policy as Device::default / BackendRegistry::auto_select (Metal on macOS, CUDA on Linux/Windows).
+    let resolved: &str = if device_str == "auto" || device_str == "gpu" {
+        registry.auto_select()
+    } else {
+        device_str
+    };
+
+    match resolved {
+        "cpu" => ml_set_global_device(Device::Cpu),
+        "metal" => {
+            if !registry.metal {
+                return ml_fallback_cpu_with_warning(
+                    device_str,
+                    "Metal not compiled in or no compatible GPU at runtime",
+                    &registry,
                 );
-                set_native_error(warning_msg);
-                let cpu_device = Device::Cpu;
-                GLOBAL_ML_DEVICE.with(|global_device| {
-                    *global_device.borrow_mut() = Some(cpu_device.clone());
-                });
-                Value::String(cpu_device.name().to_string())
-            } else {
-                // For other errors (unknown device names), return error
-                use crate::native_error::set_native_error;
+            }
+            match Device::from_str("metal") {
+                Ok(device) => ml_set_global_device(device),
+                Err(e) => ml_fallback_cpu_with_warning(device_str, e, &registry),
+            }
+        }
+        "cuda" => {
+            if !registry.cuda {
+                return ml_fallback_cpu_with_warning(
+                    device_str,
+                    "CUDA not compiled in or no compatible GPU at runtime",
+                    &registry,
+                );
+            }
+            match Device::from_str("cuda") {
+                Ok(device) => ml_set_global_device(device),
+                Err(e) => ml_fallback_cpu_with_warning(device_str, e, &registry),
+            }
+        }
+        _ => match Device::from_str(device_str) {
+            Ok(device) => ml_set_global_device(device),
+            Err(e) => {
                 set_native_error(format!("Failed to set device '{}': {}", device_str, e));
                 Value::Null
             }
-        }
+        },
     }
 }
 
@@ -2589,12 +2631,14 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
 
     let registry = BackendRegistry::detect();
 
-    // Handle "auto" mode
-    let device_str = if device_str == "auto" {
+    // "auto" and "gpu" → same policy as ml_set_device / BackendRegistry::auto_select
+    let device_str = if device_str == "auto" || device_str == "gpu" {
         registry.auto_select()
     } else {
         device_str
     };
+
+    let avail_list = || registry.available_devices().join(", ");
 
     // Two-level checking: registry first, then Device::from_str
     match device_str {
@@ -2605,10 +2649,9 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
         }
         "metal" => {
             if !registry.metal {
-                let available = registry.available_devices();
                 let error_msg = format!(
-                    "Metal backend недоступен на этой системе. Доступные устройства: {:?}",
-                    available
+                    "Device 'metal' unavailable (Metal not compiled in or no GPU at runtime). Available: [{}]",
+                    avail_list()
                 );
                 use crate::native_error::set_native_error;
                 set_native_error(error_msg.clone());
@@ -2624,7 +2667,11 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
                         Value::String(device.name().to_string())
                     }
                     Err(e) => {
-                        let error_msg = format!("Не удалось создать Metal устройство: {}", e);
+                        let error_msg = format!(
+                            "Device 'metal' unavailable ({}). Available: [{}]",
+                            e,
+                            avail_list()
+                        );
                         use crate::native_error::set_native_error;
                         set_native_error(error_msg.clone());
                         eprintln!("{}", error_msg);
@@ -2635,19 +2682,21 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
 
             #[cfg(not(feature = "metal"))]
             {
-                let error_msg = "Metal backend не включён при сборке интерпретатора. Пересоберите с --features metal".to_string();
+                let error_msg = format!(
+                    "Device 'metal' unavailable (Metal not compiled into this build). Available: [{}]",
+                    avail_list()
+                );
                 use crate::native_error::set_native_error;
                 set_native_error(error_msg.clone());
                 eprintln!("{}", error_msg);
                 Value::Null
             }
         }
-        "cuda" | "gpu" => {
+        "cuda" => {
             if !registry.cuda {
-                let available = registry.available_devices();
                 let error_msg = format!(
-                    "CUDA backend недоступен на этой системе. Доступные устройства: {:?}",
-                    available
+                    "Device 'cuda' unavailable (CUDA not compiled in or no GPU at runtime). Available: [{}]",
+                    avail_list()
                 );
                 use crate::native_error::set_native_error;
                 set_native_error(error_msg.clone());
@@ -2663,7 +2712,11 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
                         Value::String(device.name().to_string())
                     }
                     Err(e) => {
-                        let error_msg = format!("Не удалось создать CUDA устройство: {}", e);
+                        let error_msg = format!(
+                            "Device 'cuda' unavailable ({}). Available: [{}]",
+                            e,
+                            avail_list()
+                        );
                         use crate::native_error::set_native_error;
                         set_native_error(error_msg.clone());
                         eprintln!("{}", error_msg);
@@ -2674,7 +2727,10 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
 
             #[cfg(not(feature = "cuda"))]
             {
-                let error_msg = "CUDA backend не включён при сборке интерпретатора. Пересоберите с --features cuda".to_string();
+                let error_msg = format!(
+                    "Device 'cuda' unavailable (CUDA not compiled into this build). Available: [{}]",
+                    avail_list()
+                );
                 use crate::native_error::set_native_error;
                 set_native_error(error_msg.clone());
                 eprintln!("{}", error_msg);
@@ -2682,10 +2738,10 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
             }
         }
         _ => {
-            let available = registry.available_devices();
             let error_msg = format!(
-                "Неизвестное устройство '{}'. Доступные: {:?}",
-                device_str, available
+                "Unknown device '{}'. Available: [{}]",
+                device_str,
+                avail_list()
             );
             use crate::native_error::set_native_error;
             set_native_error(error_msg.clone());
@@ -2711,8 +2767,8 @@ pub fn native_nn_get_device(args: &[Value]) -> Value {
     Value::String(device.name().to_string())
 }
 
-/// Get list of available devices
-/// ml.devices() -> ["cpu", "metal"]
+/// Get list of available backends (compile-time features + runtime probe).
+/// Same as `ml.available_backends()` — `["cpu", ...]` with optional `"metal"` / `"cuda"`.
 pub fn native_devices(_args: &[Value]) -> Value {
     use crate::backend_registry::BackendRegistry;
     use std::rc::Rc;

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "module_name": "ml",
+  "package_version": "0.1.1",
+  "build": [
+    {
+      "when": { "os": ["macos"] },
+      "command": "cargo build --release --features metal"
+    },
+    {
+      "when": { "os": ["linux"] },
+      "command": "cargo build --release --features cuda"
+    },
+    {
+      "when": { "os": ["windows"] },
+      "command": "cargo build --release --features cuda"
+    }
+  ],
+  "install": [
+    {
+      "when": { "os": ["macos"] },
+      "from": "target/release/libml.dylib",
+      "to": "libml.dylib"
+    },
+    {
+      "when": { "os": ["linux"] },
+      "from": "target/release/libml.so",
+      "to": "libml.so"
+    },
+    {
+      "when": { "os": ["windows"] },
+      "from": "target/release/ml.dll",
+      "to": "ml.dll"
+    }
+  ]
+}
