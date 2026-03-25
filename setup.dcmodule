@@ -2,6 +2,9 @@
   "schema_version": 1,
   "module_name": "ml",
   "package_version": "0.1.1",
+  "hooks": {
+    "pre_build": "git submodule update --init --recursive"
+  },
   "build": [
     {
       "when": { "os": ["macos"] },
