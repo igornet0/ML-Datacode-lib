@@ -6,7 +6,6 @@ mod test_support;
 use test_support::run_ml;
 use ml::tensor::Tensor;
 use ml::layer::{Layer, Linear, Sequential};
-#[cfg(feature = "data-code-table")]
 use ml::dataset::Dataset;
 
 #[test]
@@ -85,26 +84,22 @@ fn test_sequential_creation() {
     assert_eq!(sequential.layers.len(), 1);
 }
 
-#[cfg(feature = "data-code-table")]
 #[test]
 fn test_dataset_batches() {
-    use data_code::common::table::Table;
-    use data_code::common::value::Value;
-    
-    let data = vec![
-        vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
-        vec![Value::Number(4.0), Value::Number(5.0), Value::Number(6.0)],
-        vec![Value::Number(7.0), Value::Number(8.0), Value::Number(9.0)],
-        vec![Value::Number(10.0), Value::Number(11.0), Value::Number(12.0)],
-    ];
     let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-    let mut table = Table::from_data(data, Some(headers));
-
-    let dataset = Dataset::from_table(
-        &mut table,
+    let rows = vec![
+        vec![1.0_f32, 2.0, 3.0],
+        vec![4.0, 5.0, 6.0],
+        vec![7.0, 8.0, 9.0],
+        vec![10.0, 11.0, 12.0],
+    ];
+    let dataset = Dataset::from_abi_table(
+        &headers,
+        &rows,
         &["x1".to_string(), "x2".to_string()],
         &["y".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Get batches of size 2
     let batches = dataset.batches(2, false).unwrap();
@@ -119,25 +114,21 @@ fn test_dataset_batches() {
     assert_eq!(batches[1].1.shape[0], 2);
 }
 
-#[cfg(feature = "data-code-table")]
 #[test]
 fn test_dataset_batches_shuffle() {
-    use data_code::common::table::Table;
-    use data_code::common::value::Value;
-    
-    let data = vec![
-        vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
-        vec![Value::Number(4.0), Value::Number(5.0), Value::Number(6.0)],
-        vec![Value::Number(7.0), Value::Number(8.0), Value::Number(9.0)],
-    ];
     let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-    let mut table = Table::from_data(data, Some(headers));
-
-    let dataset = Dataset::from_table(
-        &mut table,
+    let rows = vec![
+        vec![1.0_f32, 2.0, 3.0],
+        vec![4.0, 5.0, 6.0],
+        vec![7.0, 8.0, 9.0],
+    ];
+    let dataset = Dataset::from_abi_table(
+        &headers,
+        &rows,
         &["x1".to_string(), "x2".to_string()],
         &["y".to_string()],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Get batches with shuffle
     let batches = dataset.batches(2, true).unwrap();

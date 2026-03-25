@@ -1367,7 +1367,7 @@ pub fn native_smooth_l1_loss(args: &[Value]) -> Value {
 
 /// Create a dataset from a table
 /// dataset(table, feature_columns, target_columns) -> dataset
-#[cfg(feature = "data-code-table")]
+/// `table` is `AbiValue::Table` bridged to `Value::Array([headers, rows])`.
 pub fn native_dataset(args: &[Value]) -> Value {
     if args.len() != 3 {
         use crate::native_error::set_native_error;
@@ -1375,11 +1375,11 @@ pub fn native_dataset(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    let mut table = match &args[0] {
-        Value::Table(t) => t.borrow().clone(),
-        _ => {
+    let (headers, rows) = match Dataset::parse_abi_table_from_value(&args[0]) {
+        Ok(x) => x,
+        Err(e) => {
             use crate::native_error::set_native_error;
-            set_native_error("ml.dataset: first argument must be a Table".to_string());
+            set_native_error(e);
             return Value::Null;
         }
     };
@@ -1426,7 +1426,7 @@ pub fn native_dataset(args: &[Value]) -> Value {
         }
     };
 
-    match Dataset::from_table(&mut table, &feature_columns_array, &target_columns_array) {
+    match Dataset::from_abi_table(&headers, &rows, &feature_columns_array, &target_columns_array) {
         Ok(dataset) => crate::runtime::dataset_to_value(dataset),
         Err(e) => {
             use crate::native_error::set_native_error;
@@ -1434,16 +1434,6 @@ pub fn native_dataset(args: &[Value]) -> Value {
             Value::Null
         }
     }
-}
-
-#[cfg(not(feature = "data-code-table"))]
-pub fn native_dataset(_args: &[Value]) -> Value {
-    use crate::native_error::set_native_error;
-    set_native_error(
-        "ml.dataset(Table, ...): build ml with --features data-code-table (optional data-code Table support)"
-            .to_string(),
-    );
-    Value::Null
 }
 
 /// Get features tensor from dataset

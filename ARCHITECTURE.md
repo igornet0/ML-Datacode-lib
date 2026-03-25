@@ -66,7 +66,7 @@ flowchart TD
 ## Зависимости
 
 - `datacode_abi` / `datacode_sdk` — локальные пути в этом репозитории. Типы модуля (`DatacodeModule` с `export_table` + `register`, `PluginOpaque` в `AbiValue` и т.д.) должны **совпадать** с копией ABI в основном репозитории DataCode VM, иначе загрузка `libml` из VM даст UB при чтении дескриптора.
-- Опционально `data-code` (feature `data-code-table`) и **dev-dependency** для интеграционных тестов — путь задаётся в [`Cargo.toml`](Cargo.toml) (соседний checkout `../DataCode` рядом с этим репозиторием; раньше использовался `../..` для вложенного `ml` внутри дерева DataCode).
+- `datacode_abi` / `datacode_sdk` — пути в [`Cargo.toml`](Cargo.toml) на submodule `Datacode_rep`. ABI **1.4+** включает `AbiValue::Table` для передачи VM-таблиц в нативные модули (см. `Datacode_rep/src/vm/abi_bridge.rs`). Интеграционные тесты (`tests/`) используют **dev-dependency** `data-code` только как рантайм VM (`data_code::run`), не как типы таблиц в `ml`.
 
 ## Каналы сборки (артефакты) и выбор GPU
 

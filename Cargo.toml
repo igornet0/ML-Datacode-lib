@@ -16,19 +16,16 @@ default = []
 gpu = ["dep:candle-core", "dep:candle-nn"]
 cuda = ["gpu", "candle-core/cuda", "candle-nn/cuda"]
 metal = ["gpu", "candle-core/metal", "candle-nn/metal"]
-# Optional: `data_code::common::table::Table` support for `ml.dataset(Table, ...)` (requires VM Table type).
-data-code-table = ["dep:data-code"]
 
 [dependencies]
-# Use the same `datacode_abi` / `datacode_sdk` as `data-code` (repo root) to avoid duplicate types when `data-code-table` is enabled.
-datacode_sdk = { path = "Datacode_rep/datacode_sdk" }
-datacode_abi = { path = "Datacode_rep/datacode_sdk/datacode_abi" }
-data-code = { path = "Datacode_rep", optional = true }
+datacode_sdk = { path = "datacode_sdk" }
+datacode_abi = { path = "datacode_sdk/datacode_abi" }
 ndarray = "0.15"
 indicatif = "0.17"
 serde_json = "1.0"
 candle-core = { version = "0.9", default-features = false, optional = true }
 candle-nn = { version = "0.9", default-features = false, optional = true }
 
+# Integration tests run DataCode scripts via `data_code::run` (VM); not linked into `ml` rlib/cdylib.
 [dev-dependencies]
 data-code = { path = "Datacode_rep" }

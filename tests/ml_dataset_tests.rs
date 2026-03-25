@@ -1,9 +1,27 @@
-// Tests for ML Dataset (import ml — native dylib; Table values cannot cross the ABI).
+// Tests for ML Dataset (import ml — native dylib; Table crosses ABI as `AbiValue::Table`).
 
 mod test_support;
 
 use data_code::Value;
 use test_support::run_ml;
+
+#[test]
+fn test_ml_dataset_from_table_via_abi() {
+    let code = r#"
+        import ml
+        let data = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        let headers = ["x1", "x2", "y"]
+        let t = table(data, headers)
+        let ds = ml.dataset(t, ["x1", "x2"], ["y"])
+        typeof(ds)
+    "#;
+    let result = run_ml(code);
+    assert!(result.is_ok(), "{:?}", result);
+    match result.unwrap() {
+        Value::String(s) => assert_eq!(s, "plugin_opaque"),
+        _ => panic!("expected dataset handle"),
+    }
+}
 
 #[test]
 fn test_dataset_from_table() {

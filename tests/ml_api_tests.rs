@@ -49,7 +49,6 @@ fn test_ml_module_functions_available() {
 #[test]
 fn test_ml_end_to_end_workflow() {
     // Test complete ML workflow: tensors -> model -> train -> evaluate
-    // (Table -> ml.dataset cannot pass through the ABI bridge when ml is loaded as a dylib.)
     let code = r#"
         import ml
         
@@ -113,7 +112,6 @@ fn test_ml_loss_functions_in_workflow() {
 #[test]
 fn test_ml_dataset_with_table_operations() {
     // Tensor-based dataset dimensions (same expectations as table path: 4 rows, 2 features).
-    // Table -> ml.dataset is not ABI-representable when ml is a native dylib.
     let code = r#"
         import ml
         

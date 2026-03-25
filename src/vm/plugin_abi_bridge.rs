@@ -80,10 +80,6 @@ impl PluginAbiBridgeContext {
             Value::Path(_) => Err(BridgeError::Unrepresentable(
                 "Path is not representable in ABI",
             )),
-            #[cfg(feature = "data-code-table")]
-            Value::Table(_) => Err(BridgeError::Unrepresentable(
-                "Table is not representable in ABI",
-            )),
         }
     }
 
@@ -135,6 +131,47 @@ impl PluginAbiBridgeContext {
                 } else {
                     Ok(Value::PluginOpaque { tag, id })
                 }
+            }
+            AbiValue::Table {
+                headers,
+                headers_len,
+                cells,
+                rows,
+                cols,
+            } => {
+                if rows == 0 || cols == 0 {
+                    return Ok(Value::Array(Rc::new(RefCell::new(vec![
+                        Value::Array(Rc::new(RefCell::new(Vec::new()))),
+                        Value::Array(Rc::new(RefCell::new(Vec::new()))),
+                    ]))));
+                }
+                if headers.is_null() || cells.is_null() {
+                    return Err(BridgeError::InvalidHandle);
+                }
+                let expected_cells = rows
+                    .checked_mul(cols)
+                    .ok_or(BridgeError::InvalidHandle)?;
+                let header_slice =
+                    unsafe { std::slice::from_raw_parts(headers, headers_len) };
+                let mut header_values = Vec::with_capacity(headers_len);
+                for &av in header_slice {
+                    header_values.push(self.abi_to_value(av)?);
+                }
+                let cells_slice =
+                    unsafe { std::slice::from_raw_parts(cells, expected_cells) };
+                let mut rows_vec = Vec::with_capacity(rows);
+                for r in 0..rows {
+                    let mut row = Vec::with_capacity(cols);
+                    for c in 0..cols {
+                        let av = cells_slice[r * cols + c];
+                        row.push(self.abi_to_value(av)?);
+                    }
+                    rows_vec.push(Value::Array(Rc::new(RefCell::new(row))));
+                }
+                Ok(Value::Array(Rc::new(RefCell::new(vec![
+                    Value::Array(Rc::new(RefCell::new(header_values))),
+                    Value::Array(Rc::new(RefCell::new(rows_vec))),
+                ]))))
             }
         }
     }

@@ -87,17 +87,12 @@ fn build_cdylib_release_nested() -> Result<(), String> {
         .arg("--release")
         .arg("--manifest-path")
         .arg(manifest_path())
-        .arg("--features")
-        .arg("data-code-table")
         .arg("--target-dir")
         .arg(target_dir_for_nested_build())
         .status()
         .map_err(|e| format!("cargo: {}", e))?;
     if !status.success() {
-        return Err(
-            "cargo build --release for ml (libml cdylib, --features data-code-table) failed"
-                .to_string(),
-        );
+        return Err("cargo build --release for ml (libml cdylib) failed".to_string());
     }
     Ok(())
 }

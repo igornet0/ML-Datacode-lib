@@ -1,3 +1,4 @@
-[submodule "Datacode_rep"]
-	path = Datacode_rep
-	url = https://github.com/igornet0/DataCode.git
+[submodule "datacode_sdk"]
+	path = datacode_sdk
+	url = https://github.com/igornet0/Datacode-sdk.git
+	branch = main

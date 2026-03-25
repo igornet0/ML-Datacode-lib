@@ -389,4 +389,4 @@ extern "C" fn register_ml_exports(ctx: *mut datacode_abi::VmContext) {
     datacode_sdk::dc_fn!(&mut m, "layer_unfreeze", shim_layer_unfreeze);
 }
 
-datacode_sdk::define_module!("ml", 1, 3, register_ml_exports);
+datacode_sdk::define_module!("ml", 1, 4, register_ml_exports);

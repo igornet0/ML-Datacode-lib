@@ -8,9 +8,6 @@ use std::rc::Rc;
 
 use datacode_abi::NativeHandle;
 
-#[cfg(feature = "data-code-table")]
-use data_code::common::table::Table;
-
 #[derive(Clone, Debug)]
 pub enum Value {
     Number(f64),
@@ -25,6 +22,4 @@ pub enum Value {
     /// Pointer from VM `AbiValue::Object` when it is not a round-tripped local `Object`.
     ObjectPtr(NativeHandle),
     Path(PathBuf),
-    #[cfg(feature = "data-code-table")]
-    Table(Rc<RefCell<Table>>),
 }

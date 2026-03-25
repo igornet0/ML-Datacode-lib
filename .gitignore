@@ -17,6 +17,9 @@ tests/fixtures/env/packages/ml/
 # Contains mutation testing data
 **/mutants.out*/
 
+# Datacode repository for dev dependencies
+Datacode_rep/
+
 .DS_Store
 
 # RustRover

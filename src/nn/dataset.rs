@@ -1,12 +1,11 @@
 // Dataset structure for working with tables as ML datasets
 
-#[cfg(feature = "data-code-table")]
-use data_code::common::table::Table;
-#[cfg(feature = "data-code-table")]
-use data_code::common::value::Value;
-use crate::tensor::Tensor;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, BufReader};
+
+use crate::tensor::Tensor;
+use crate::vm_value::Value;
 
 /// Dataset for ML operations
 /// Converts table columns to tensors for training
@@ -19,18 +18,77 @@ pub struct Dataset {
 }
 
 impl Dataset {
-    /// Create a dataset from a table
-    /// 
-    /// # Arguments
-    /// * `table` - The table to convert
-    /// * `feature_columns` - Names of columns to use as features
-    /// * `target_columns` - Names of columns to use as targets
-    /// 
-    /// # Returns
-    /// Dataset with features and targets as tensors
-    #[cfg(feature = "data-code-table")]
-    pub fn from_table(
-        table: &mut Table,
+    /// Decode `Value::Array([headers, rows])` from `AbiValue::Table` (see `plugin_abi_bridge`).
+    pub fn parse_abi_table_from_value(v: &Value) -> Result<(Vec<String>, Vec<Vec<f32>>), String> {
+        let outer = match v {
+            Value::Array(a) => a.borrow(),
+            _ => return Err("ml.dataset: table must be an array [headers, rows]".to_string()),
+        };
+        if outer.len() != 2 {
+            return Err(format!(
+                "ml.dataset: table array must have length 2 (headers, rows), got {}",
+                outer.len()
+            ));
+        }
+        let header_cells = match &outer[0] {
+            Value::Array(h) => h.borrow(),
+            _ => return Err("ml.dataset: table headers must be an array".to_string()),
+        };
+        let mut headers = Vec::with_capacity(header_cells.len());
+        for hv in header_cells.iter() {
+            match hv {
+                Value::String(s) => headers.push(s.clone()),
+                Value::Number(n) => headers.push(n.to_string()),
+                _ => {
+                    return Err(
+                        "ml.dataset: header cells must be strings or numbers".to_string(),
+                    )
+                }
+            }
+        }
+        let num_cols = headers.len();
+        if num_cols == 0 {
+            return Err("ml.dataset: table has no columns".to_string());
+        }
+        let row_vals = match &outer[1] {
+            Value::Array(r) => r.borrow(),
+            _ => return Err("ml.dataset: table rows must be an array".to_string()),
+        };
+        let mut rows = Vec::with_capacity(row_vals.len());
+        for row_v in row_vals.iter() {
+            let row_cells = match row_v {
+                Value::Array(row) => row.borrow(),
+                _ => {
+                    return Err("ml.dataset: each row must be an array".to_string())
+                }
+            };
+            if row_cells.len() != num_cols {
+                return Err(format!(
+                    "ml.dataset: row length {} does not match header count {}",
+                    row_cells.len(),
+                    num_cols
+                ));
+            }
+            let mut rf = Vec::with_capacity(num_cols);
+            for c in row_cells.iter() {
+                match c {
+                    Value::Number(n) => rf.push(*n as f32),
+                    _ => {
+                        return Err(
+                            "ml.dataset: table cells must be numbers".to_string(),
+                        )
+                    }
+                }
+            }
+            rows.push(rf);
+        }
+        Ok((headers, rows))
+    }
+
+    /// Build a dataset from column headers and row-major numeric rows (from ABI `Table`).
+    pub fn from_abi_table(
+        headers: &[String],
+        rows: &[Vec<f32>],
         feature_columns: &[String],
         target_columns: &[String],
     ) -> Result<Self, String> {
@@ -40,60 +98,56 @@ impl Dataset {
         if target_columns.is_empty() {
             return Err("At least one target column is required".to_string());
         }
-
+        let mut idx: HashMap<&str, usize> = HashMap::new();
+        for (i, h) in headers.iter().enumerate() {
+            idx.insert(h.as_str(), i);
+        }
         for col_name in feature_columns {
-            if table.get_column(col_name).is_none() {
+            if !idx.contains_key(col_name.as_str()) {
                 return Err(format!("Feature column '{}' not found in table", col_name));
             }
         }
         for col_name in target_columns {
-            if table.get_column(col_name).is_none() {
+            if !idx.contains_key(col_name.as_str()) {
                 return Err(format!("Target column '{}' not found in table", col_name));
             }
         }
-
-        let num_rows = table.len();
+        let num_rows = rows.len();
         if num_rows == 0 {
             return Err("Table is empty".to_string());
         }
-
-        let mut feature_data = Vec::new();
-        for col_name in feature_columns {
-            let column = table.get_column(col_name)
-                .ok_or_else(|| format!("Column '{}' not found", col_name))?;
-
-            for val in column.iter() {
-                match val {
-                    Value::Number(n) => feature_data.push(*n as f32),
-                    _ => return Err(format!(
-                        "Feature column '{}' contains non-numeric values. Only numeric values are supported.",
-                        col_name
-                    )),
-                }
+        for (ri, row) in rows.iter().enumerate() {
+            if row.len() != headers.len() {
+                return Err(format!(
+                    "Row {}: expected {} columns, got {}",
+                    ri,
+                    headers.len(),
+                    row.len()
+                ));
             }
         }
 
-        // Reshape: [num_rows * num_features] -> [num_rows, num_features]
+        let mut feature_data = Vec::with_capacity(num_rows * feature_columns.len());
+        for col_name in feature_columns {
+            let cix = *idx
+                .get(col_name.as_str())
+                .expect("column checked");
+            for row in rows {
+                feature_data.push(row[cix]);
+            }
+        }
         let num_features = feature_columns.len();
         let features = Tensor::new(feature_data, vec![num_rows, num_features])?;
 
-        let mut target_data = Vec::new();
+        let mut target_data = Vec::with_capacity(num_rows * target_columns.len());
         for col_name in target_columns {
-            let column = table.get_column(col_name)
-                .ok_or_else(|| format!("Column '{}' not found", col_name))?;
-
-            for val in column.iter() {
-                match val {
-                    Value::Number(n) => target_data.push(*n as f32),
-                    _ => return Err(format!(
-                        "Target column '{}' contains non-numeric values. Only numeric values are supported.",
-                        col_name
-                    )),
-                }
+            let cix = *idx
+                .get(col_name.as_str())
+                .expect("column checked");
+            for row in rows {
+                target_data.push(row[cix]);
             }
         }
-
-        // Reshape: [num_rows * num_targets] -> [num_rows, num_targets]
         let num_targets = target_columns.len();
         let targets = Tensor::new(target_data, vec![num_rows, num_targets])?;
 
@@ -105,8 +159,7 @@ impl Dataset {
         })
     }
 
-    /// Build a dataset from feature/target tensors (used when `ml` is loaded as a dylib and `Table`
-    /// values cannot cross the ABI boundary).
+    /// Build a dataset from feature/target tensors (e.g. when only tensors are available).
     pub fn from_tensors(mut features: Tensor, mut targets: Tensor) -> Result<Self, String> {
         if features.shape.is_empty() || targets.shape.is_empty() {
             return Err("features and targets must be non-empty tensors".to_string());
@@ -381,30 +434,48 @@ pub fn load_mnist_labels(path: &str) -> Result<Vec<u8>, String> {
     Ok(labels)
 }
 
-#[cfg(all(test, feature = "data-code-table"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
-    fn test_dataset_from_table() {
-        let data = vec![
-            vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
-            vec![Value::Number(4.0), Value::Number(5.0), Value::Number(6.0)],
-        ];
+    fn test_dataset_from_abi_table() {
         let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-        let mut table = Table::from_data(data, Some(headers));
-
-        let dataset = Dataset::from_table(
-            &mut table,
+        let rows = vec![
+            vec![1.0_f32, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+        ];
+        let dataset = Dataset::from_abi_table(
+            &headers,
+            &rows,
             &["x1".to_string(), "x2".to_string()],
             &["y".to_string()],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(dataset.batch_size(), 2);
         assert_eq!(dataset.num_features(), 2);
         assert_eq!(dataset.num_targets(), 1);
         assert_eq!(dataset.features().shape, vec![2, 2]);
         assert_eq!(dataset.targets().shape, vec![2, 1]);
+    }
+
+    #[test]
+    fn test_parse_abi_table_from_value() {
+        let v = Value::Array(Rc::new(RefCell::new(vec![
+            Value::Array(Rc::new(RefCell::new(vec![
+                Value::String("x1".into()),
+                Value::String("y".into()),
+            ]))),
+            Value::Array(Rc::new(RefCell::new(vec![Value::Array(Rc::new(
+                RefCell::new(vec![Value::Number(1.0), Value::Number(3.0)]),
+            ))]))),
+        ])));
+        let (h, r) = Dataset::parse_abi_table_from_value(&v).unwrap();
+        assert_eq!(h, vec!["x1", "y"]);
+        assert_eq!(r, vec![vec![1.0_f32, 3.0]]);
     }
 }
 
