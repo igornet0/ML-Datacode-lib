@@ -27,5 +27,6 @@ candle-core = { version = "0.9", default-features = false, optional = true }
 candle-nn = { version = "0.9", default-features = false, optional = true }
 
 # Integration tests run DataCode scripts via `data_code::run` (VM); not linked into `ml` rlib/cdylib.
+# Git (not `path = "Datacode_rep"`) so `dpm add ml` clones work without a local VM checkout.
 [dev-dependencies]
-data-code = { path = "Datacode_rep" }
+data-code = { git = "https://github.com/igornet0/DataCode", branch = "main" }
