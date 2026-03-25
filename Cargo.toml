@@ -28,4 +28,4 @@ candle-nn = { version = "0.9", default-features = false, optional = true }
 
 # Integration tests run DataCode scripts via `data_code::run` (VM); not linked into `ml` rlib/cdylib.
 [dev-dependencies]
-data-code = { path = "Datacode_rep", optional = true}
+data-code = { path = "Datacode_rep" }
