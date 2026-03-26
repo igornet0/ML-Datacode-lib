@@ -1,5 +1,7 @@
 # Compiler metadata (DataCode)
 
+Применение изменений в репозиторий DataCode: [integration/README.md](integration/README.md) и патч [integration/datacode_ml_named_args.patch](integration/datacode_ml_named_args.patch).
+
 `ml_native_named_args.json` — имена параметров для разрешения **именованных и позиционных** аргументов в компиляторе `data-code` (через crate `datacode_ml_compiler`).
 
 Источник правды: этот JSON + crate `crates/datacode_ml_compiler`. В корневом пакете `data-code` (`src/compiler/natives.rs`) вызывается `datacode_ml_compiler::native_named_arg_params`.

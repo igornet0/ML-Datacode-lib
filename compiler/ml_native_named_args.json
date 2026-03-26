@@ -12,7 +12,35 @@
       "x_val",
       "y_val"
     ],
+    "nn_train": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "x_val",
+      "y_val"
+    ],
     "train_sh": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "monitor",
+      "patience",
+      "min_delta",
+      "restore_best",
+      "x_val",
+      "y_val"
+    ],
+    "nn_train_sh": [
       "nn",
       "x",
       "y",

@@ -368,7 +368,9 @@ extern "C" fn register_ml_exports(ctx: *mut datacode_abi::VmContext) {
     datacode_sdk::dc_fn!(&mut m, "native_nn_forward", shim_nn_forward);
     datacode_sdk::dc_fn!(&mut m, "nn_forward", shim_nn_forward_alias);
     datacode_sdk::dc_fn!(&mut m, "nn_train_sh", shim_nn_train_sh);
+    datacode_sdk::dc_fn!(&mut m, "train_sh", shim_nn_train_sh);
     datacode_sdk::dc_fn!(&mut m, "nn_train", shim_nn_train);
+    datacode_sdk::dc_fn!(&mut m, "train", shim_nn_train);
     datacode_sdk::dc_fn!(&mut m, "nn_save", shim_nn_save);
     datacode_sdk::dc_fn!(&mut m, "nn_load", shim_nn_load);
     datacode_sdk::dc_fn!(&mut m, "ml_save_model", shim_ml_save_model);

@@ -59,7 +59,7 @@ flowchart TD
 
 ## Прочее в репозитории
 
-- [`compiler/`](compiler/) — JSON с именами параметров для компилятора DataCode; crate [`crates/datacode_ml_compiler`](crates/datacode_ml_compiler/) встраивает этот JSON.
+- [`compiler/`](compiler/) — JSON с именами параметров для компилятора DataCode; crate [`crates/datacode_ml_compiler`](crates/datacode_ml_compiler/) встраивает этот JSON. Корневой [`Cargo.toml`](Cargo.toml) объявляет **workspace** с членом `crates/datacode_ml_compiler`, чтобы DataCode мог подключать crate по `git` с `subdirectory`. Патч для репозитория DataCode: [`compiler/integration/`](compiler/integration/).
 - [`examples/`](examples/) — примеры скриптов `.dc`.
 - [`datasets/mnist/`](datasets/mnist/) — IDX-файлы MNIST (пути через `ml::mnist_paths`).
 

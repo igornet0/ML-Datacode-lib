@@ -1,3 +1,9 @@
+# Workspace lets `crates/datacode_ml_compiler` be used as a git dependency from DataCode
+# (`package = "datacode_ml_compiler"` + `subdirectory = "crates/datacode_ml_compiler"`).
+[workspace]
+members = [".", "crates/datacode_ml_compiler"]
+resolver = "2"
+
 [package]
 name = "ml"
 version = "0.1.1"
@@ -29,4 +35,4 @@ candle-nn = { version = "0.9", default-features = false, optional = true }
 # Integration tests run DataCode scripts via `data_code::run` (VM); not linked into `ml` rlib/cdylib.
 # Git (not `path = "Datacode_rep"`) so `dpm add ml` clones work without a local VM checkout.
 [dev-dependencies]
-data-code = { git = "https://github.com/igornet0/DataCode", branch = "main" }
+data-code = { git = "https://github.com/igornet0/DataCode", branch = "debug" }

@@ -1,0 +1,26 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -45,6 +45,8 @@ path = "src/datacode_server_main.rs"
+ 
+ [dependencies]
+ datacode_abi = { path = "datacode_sdk/datacode_abi" }
++# ML native named-arg metadata (train, nn_train, train_sh, freeze, …) from ML-Datacode-lib
++datacode_ml_compiler = { git = "https://github.com/igornet0/ML-Datacode-lib.git", branch = "main", subdirectory = "crates/datacode_ml_compiler" }
+ 
+ # Async runtime for WebSocket server
+ tokio = { version = "1", features = ["full"] }
+diff --git a/src/compiler/natives.rs b/src/compiler/natives.rs
+--- a/src/compiler/natives.rs
++++ b/src/compiler/natives.rs
+@@ -99,6 +99,10 @@ fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str)
+ /// Возвращает имена параметров для нативной функции, если она поддерживает именованные аргументы
+ /// None возвращается для функций с переменным числом аргументов (print, min, max, array)
+ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
++    // ML plugin (`import ml`): model.train(...), ml.nn_train(...), train_sh, layer.freeze(), etc.
++    if let Some(params) = datacode_ml_compiler::native_named_arg_params(function_name) {
++        return Some(params);
++    }
+     match function_name {
+         // Функции с переменным числом аргументов - именованные аргументы не поддерживаются
+         "print" | "min" | "max" | "array" => None,

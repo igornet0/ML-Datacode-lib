@@ -73,6 +73,7 @@ print("Размер пакета: ", batch_size)
 print("Коэффициент обучения: ", learning_rate)
 
 #  Обучение модели с валидационными данными
+# Именованные аргументы: нужен datacode, собранный с datacode_ml_compiler (см. compiler/integration/ в ML-Datacode-lib).
 # loss_history = ml.nn_train(model, x_train, y_train, 
 #                            epochs, batch_size, learning_rate, 
 #                            "cross_entropy", x_val, y_val)

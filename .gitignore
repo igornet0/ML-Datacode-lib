@@ -18,10 +18,10 @@ tests/fixtures/env/packages/ml/
 **/mutants.out*/
 
 # Datacode repository for dev dependencies
-Datacode_rep/
+# Datacode_rep/
 
 .DS_Store
-
+1test_lib/
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
