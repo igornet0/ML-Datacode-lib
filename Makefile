@@ -31,13 +31,18 @@ help:
 	@echo "Артефакты копируются в $(DIST_DIR)/ml-{cpu,metal,cuda}/"
 	@echo "Промежуточные target-каталоги: target/ml-{cpu,metal,cuda}/"
 
-build-cpu:
+install: 
+	@echo "Installing submodules..."
+	git submodule update --init --recursive datacode_sdk
+	@echo "Submodules installed"
+
+build-cpu : install
 	cargo build --release --target-dir "$(TARGET_CPU)"
 	@mkdir -p "$(DIST_DIR)/ml-cpu"
 	@cp "$(TARGET_CPU)/release/$(LIBML)" "$(DIST_DIR)/ml-cpu/"
 	@echo "OK: $(DIST_DIR)/ml-cpu/$(LIBML)"
 
-build-metal:
+build-metal: install
 	@if [ "$(UNAME_S)" != "Darwin" ]; then \
 		echo "Пропуск build-metal: Metal только на macOS"; \
 		exit 0; \
@@ -47,7 +52,7 @@ build-metal:
 	@cp "$(TARGET_METAL)/release/$(LIBML)" "$(DIST_DIR)/ml-metal/"
 	@echo "OK: $(DIST_DIR)/ml-metal/$(LIBML)"
 
-build-cuda:
+build-cuda: install
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		echo "Пропуск build-cuda: CUDA не собирается на macOS (используйте Metal или CPU)"; \
 		exit 0; \

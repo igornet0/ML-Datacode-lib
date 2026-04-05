@@ -2,3 +2,7 @@
 	path = datacode_sdk
 	url = https://github.com/igornet0/Datacode-sdk.git
 	branch = main
+[submodule "datasets_rep"]
+	path = datasets_rep
+	url = https://github.com/igornet0/ML-Datacode-datasets.git
+	branch = main

@@ -2385,95 +2385,35 @@ pub fn native_ml_load_model(args: &[Value]) -> Value {
 /// Load MNIST dataset
 /// load_mnist("train") or load_mnist("test") -> dataset
 pub fn native_load_mnist(args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+
     if args.len() != 1 {
+        set_native_error("ml.load_mnist expects exactly one string argument: \"train\" or \"test\"".to_string());
         return Value::Null;
     }
 
     let split = match &args[0] {
         Value::String(s) => s.as_str(),
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.load_mnist: argument must be a string".to_string());
+            return Value::Null;
+        }
     };
 
-    // Determine file paths based on split
-    // Try multiple possible locations for MNIST files
-    let (images_file, labels_file) = match split {
-        "train" => (
-            crate::mnist_paths::TRAIN_IMAGES,
-            crate::mnist_paths::TRAIN_LABELS,
-        ),
-        "test" => (
-            crate::mnist_paths::T10K_IMAGES,
-            crate::mnist_paths::T10K_LABELS,
-        ),
-        _ => return Value::Null,
+    let (images_path, labels_path) = match crate::mnist_locate::resolve_mnist_paths(split) {
+        Ok(p) => p,
+        Err(e) => {
+            set_native_error(e);
+            return Value::Null;
+        }
     };
 
-    // Try to resolve paths - try multiple possible locations
-    use std::path::PathBuf;
-    use std::env;
-    
-    // Helper function to find file in multiple possible locations
-    fn find_file(filename: &str) -> Option<String> {
-        let possible_paths = vec![
-            filename.to_string(), // Original path
-            format!("../{}", filename), // One level up
-            format!("../../{}", filename), // Two levels up
-            format!("../../../{}", filename), // Three levels up
-        ];
-        
-        // Try relative to current directory
-        if let Ok(cwd) = env::current_dir() {
-            for path in &possible_paths {
-                let full_path = cwd.join(path);
-                if full_path.exists() {
-                    return Some(full_path.to_string_lossy().to_string());
-                }
-            }
+    match Dataset::from_mnist(&images_path, &labels_path) {
+        Ok(dataset) => crate::runtime::dataset_to_value(dataset),
+        Err(e) => {
+            set_native_error(format!("load_mnist: {}", e));
+            Value::Null
         }
-        
-        // Try direct path (absolute or relative)
-        let direct = PathBuf::from(filename);
-        if direct.exists() {
-            return Some(direct.to_string_lossy().to_string());
-        }
-        
-        // Try with CARGO_MANIFEST_DIR if available (when running from cargo)
-        if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
-            let manifest_path = PathBuf::from(manifest_dir).join(filename);
-            if manifest_path.exists() {
-                return Some(manifest_path.to_string_lossy().to_string());
-            }
-        }
-        
-        None
-    }
-    
-    // Find images file
-    let images_path = find_file(images_file);
-    
-    // Find labels file (in same directory as images if found, otherwise search)
-    let labels_path = if let Some(ref img_path) = images_path {
-        // If we found images, construct labels path in the same directory
-        let mut path = PathBuf::from(img_path);
-        path.set_file_name(labels_file.split('/').last().unwrap_or(labels_file));
-        if path.exists() {
-            path.to_string_lossy().to_string()
-        } else {
-            // Fallback to searching
-            find_file(labels_file).unwrap_or_else(|| labels_file.to_string())
-        }
-    } else {
-        // Search for labels file
-        find_file(labels_file).unwrap_or_else(|| labels_file.to_string())
-    };
-
-    if let Some(ref img_path) = images_path {
-        match Dataset::from_mnist(img_path, &labels_path) {
-            Ok(dataset) => crate::runtime::dataset_to_value(dataset),
-            Err(_e) => Value::Null,
-        }
-    } else {
-        Value::Null
     }
 }
 

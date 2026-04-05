@@ -61,6 +61,8 @@ pub mod backend_registry;
 
 #[path = "core/mnist_paths.rs"]
 pub mod mnist_paths;
+#[path = "core/mnist_locate.rs"]
+mod mnist_locate;
 
 pub use autograd::{Variable, requires_grad};
 pub use graph::{Graph, Node, NodeId, OpType};

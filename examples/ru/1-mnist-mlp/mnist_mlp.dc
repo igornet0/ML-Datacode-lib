@@ -13,8 +13,8 @@ print("Загрузка наборов данных MNIST...")
 dataset_train = ml.load_mnist("train")
 dataset_test = ml.load_mnist("test")
 
-print("Размер обучающего набора: ", ml.dataset_features(dataset_train).shape[0])
-print("Размер тестового набора: ", ml.dataset_features(dataset_test).shape[0])
+print("Размер обучающего набора: ", ml.shape(ml.dataset_features(dataset_train))[0])
+print("Размер тестового набора: ", ml.shape(ml.dataset_features(dataset_test))[0])
 
 #  Создание архитектуры MLP: Linear(784, 128) → ReLU → Linear(128, 10)
 #  Примечание: Softmax встроен в операцию CrossEntropy loss, поэтому не нужен в Sequential
@@ -24,7 +24,7 @@ model_path = path("model_mnist.nn")
 
 if model_path.exists {
     print("Загрузка модели из - ", model_path)
-    model = ml.load(model_path)
+    model = ml.nn_load(str(model_path))
     print("Модель загружена из - ", model_path)
 } else {
     print("Создание архитектуры MLP...")
@@ -42,10 +42,10 @@ if model_path.exists {
     print("Модель успешно создана!")
 }
 
-model.device("metal")
-# model.device("gpu")
-# model.device("cpu")
-print("Устройство модели: ", model.get_device())
+ml.nn_set_device(model, "metal")
+# ml.nn_set_device(model, "gpu")
+# ml.nn_set_device(model, "cpu")
+print("Устройство модели: ", ml.nn_get_device(model))
 
 #  Получение обучающих данных
 x_train = ml.dataset_features(dataset_train)
@@ -78,7 +78,7 @@ print("Коэффициент обучения: ", learning_rate)
 #                            epochs, batch_size, learning_rate, 
 #                            "cross_entropy", x_val, y_val)
 
-loss_history = model.train(x_train, y_train, 
+loss_history = ml.nn_train(model, x_train, y_train,
                             epochs, batch_size, learning_rate,
                             loss="cross_entropy", optimizer="Adam",
                             x_val=x_val, y_val=y_val)
@@ -95,9 +95,9 @@ y_test = ml.dataset_targets(dataset_test)
 predictions = ml.nn_forward(model, x_test)
 
 #  Вычисление точности (упрощённо - на практике нужно сравнивать предсказания с метками)
-print("Форма предсказаний: ", predictions.shape)
-print("Форма тестовых меток: ", y_test.shape)
+print("Форма предсказаний: ", ml.shape(predictions))
+print("Форма тестовых меток: ", ml.shape(y_test))
 
 print("Пример обучения MNIST MLP завершён!")
 
-model.save(model_path)
+ml.nn_save(model, str(model_path))
