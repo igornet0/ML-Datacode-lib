@@ -38,11 +38,11 @@ fn test_linear_layer_forward_1d() {
     
     // Check output shape: [batch_size, out_features] = [1, 2]
     assert_eq!(output.shape, vec![1, 2]);
-    assert_eq!(output.data.len(), 2);
+    assert_eq!(output.numel(), 2);
     
     // Output should be computed (not all zeros, since weights are initialized)
     // With He initialization, weights are random, so output should be non-zero
-    let sum: f32 = output.data.iter().sum();
+    let sum: f32 = output.as_slice().iter().copied().sum();
     // Sum should be non-zero (weights are initialized randomly)
     assert!(sum.abs() > 0.0);
 }
@@ -59,7 +59,7 @@ fn test_linear_layer_forward_2d() {
     
     // Check output shape: [batch_size, out_features] = [3, 3]
     assert_eq!(output.shape, vec![3, 3]);
-    assert_eq!(output.data.len(), 9);
+    assert_eq!(output.numel(), 9);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn test_linear_layer_output_shape() {
     
     // Input: [2, 8], Output should be: [2, 4]
     assert_eq!(output.shape, vec![2, 4]);
-    assert_eq!(output.data.len(), 8);
+    assert_eq!(output.numel(), 8);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn test_relu_layer_forward_positive() {
     
     // ReLU should preserve positive values
     assert_eq!(output.shape, input.shape);
-    assert_eq!(output.data, vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(output.to_vec(), vec![1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn test_relu_layer_forward_negative() {
     
     // ReLU should set negative values to 0
     assert_eq!(output.shape, vec![4]);
-    assert_eq!(output.data, vec![0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(output.to_vec(), vec![0.0, 0.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_relu_layer_forward_mixed() {
     
     // ReLU: negative -> 0, zero -> 0, positive -> unchanged
     assert_eq!(output.shape, vec![5]);
-    assert_eq!(output.data, vec![0.0, 0.0, 0.0, 1.0, 2.0]);
+    assert_eq!(output.to_vec(), vec![0.0, 0.0, 0.0, 1.0, 2.0]);
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn test_relu_layer_output_shape() {
 #[test]
 fn test_softmax_layer_forward_1d() {
     // Test Softmax with 1D tensor
-    let layer = Softmax;
+    let layer = Softmax::new();
     
     let input = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).unwrap();
     
@@ -179,27 +179,27 @@ fn test_softmax_layer_forward_1d() {
     
     // Check shape is preserved
     assert_eq!(output.shape, vec![3]);
-    assert_eq!(output.data.len(), 3);
+    assert_eq!(output.numel(), 3);
     
     // Check that all values are positive
-    for &val in &output.data {
+    for &val in output.as_slice() {
         assert!(val > 0.0);
     }
     
     // Check that sum is approximately 1.0
-    let sum: f32 = output.data.iter().sum();
+    let sum: f32 = output.as_slice().iter().copied().sum();
     assert!((sum - 1.0).abs() < 1e-5, "Softmax sum should be 1.0, got {}", sum);
     
     // Check that largest input has highest probability
     // Input: [1.0, 2.0, 3.0], so output[2] should be largest
-    assert!(output.data[2] > output.data[1]);
-    assert!(output.data[1] > output.data[0]);
+    assert!(output.as_slice()[2] > output.as_slice()[1]);
+    assert!(output.as_slice()[1] > output.as_slice()[0]);
 }
 
 #[test]
 fn test_softmax_layer_forward_2d() {
     // Test Softmax with 2D tensor (batch)
-    let layer = Softmax;
+    let layer = Softmax::new();
     
     // Input: [2, 3] - 2 samples, 3 classes each
     let input = Tensor::new(vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0], vec![2, 3]).unwrap();
@@ -208,27 +208,27 @@ fn test_softmax_layer_forward_2d() {
     
     // Check shape is preserved
     assert_eq!(output.shape, vec![2, 3]);
-    assert_eq!(output.data.len(), 6);
+    assert_eq!(output.numel(), 6);
     
     // Check that all values are positive
-    for &val in &output.data {
+    for &val in output.as_slice() {
         assert!(val > 0.0);
     }
     
     // Check that each row sums to 1.0
     // Row 0: [1.0, 2.0, 3.0] -> softmax
-    let row0_sum: f32 = output.data[0..3].iter().sum();
+    let row0_sum: f32 = output.as_slice()[0..3].iter().copied().sum();
     assert!((row0_sum - 1.0).abs() < 1e-5, "Row 0 sum should be 1.0, got {}", row0_sum);
     
     // Row 1: [3.0, 2.0, 1.0] -> softmax
-    let row1_sum: f32 = output.data[3..6].iter().sum();
+    let row1_sum: f32 = output.as_slice()[3..6].iter().copied().sum();
     assert!((row1_sum - 1.0).abs() < 1e-5, "Row 1 sum should be 1.0, got {}", row1_sum);
 }
 
 #[test]
 fn test_softmax_layer_sum_to_one() {
     // Test that Softmax output always sums to 1.0
-    let layer = Softmax;
+    let layer = Softmax::new();
     
     // Test with various inputs
     let test_cases = vec![
@@ -242,7 +242,7 @@ fn test_softmax_layer_sum_to_one() {
         let input = Tensor::new(test_input.clone(), vec![test_input.len()]).unwrap();
         let output = call_layer(&layer, input).unwrap();
         
-        let sum: f32 = output.data.iter().sum();
+        let sum: f32 = output.as_slice().iter().copied().sum();
         assert!(
             (sum - 1.0).abs() < 1e-5,
             "Softmax sum should be 1.0, got {} for input {:?}",
@@ -255,7 +255,7 @@ fn test_softmax_layer_sum_to_one() {
 #[test]
 fn test_softmax_layer_output_shape() {
     // Test that Softmax preserves input shape
-    let layer = Softmax;
+    let layer = Softmax::new();
     
     // Test with 1D
     let input1d = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).unwrap();
@@ -277,7 +277,7 @@ fn test_layer_chain() {
     // Test chaining layers: Linear → ReLU → Softmax
     let linear = Linear::new(10, 5, true).unwrap();
     let relu = ReLU;
-    let softmax = Softmax;
+    let softmax = Softmax::new();
     
     // Create input [1, 10]
     let input = Tensor::ones(vec![1, 10]);
@@ -295,9 +295,9 @@ fn test_layer_chain() {
     assert_eq!(output3.shape, vec![1, 5]);
     
     // Check Softmax properties
-    let sum: f32 = output3.data.iter().sum();
+    let sum: f32 = output3.as_slice().iter().copied().sum();
     assert!((sum - 1.0).abs() < 1e-5);
-    for &val in &output3.data {
+    for &val in output3.as_slice() {
         assert!(val > 0.0);
     }
 }
@@ -322,7 +322,7 @@ fn test_layer_with_different_shapes() {
     let output3d = call_layer(&relu, input3d).unwrap();
     assert_eq!(output3d.shape, vec![2, 2, 2]);
     // All should be 0 (ReLU of negative)
-    for &val in &output3d.data {
+    for &val in output3d.as_slice() {
         assert_eq!(val, 0.0);
     }
 }

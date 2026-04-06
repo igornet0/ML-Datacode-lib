@@ -1,12 +1,11 @@
-# Workspace lets `crates/datacode_ml_compiler` be used as a git dependency from DataCode
-# (`package = "datacode_ml_compiler"` + `subdirectory = "crates/datacode_ml_compiler"`).
+# `datacode_ml_compiler` ships here; host `data-code` depends on it by path from the monorepo root.
 [workspace]
 members = [".", "crates/datacode_ml_compiler"]
 resolver = "2"
 
 [package]
 name = "ml"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "ML runtime for DataCode (tensors, autograd, optional GPU via Candle)"
 license = "MIT"
@@ -23,10 +22,14 @@ gpu = ["dep:candle-core", "dep:candle-nn"]
 cuda = ["gpu", "candle-core/cuda", "candle-nn/cuda"]
 metal = ["gpu", "candle-core/metal", "candle-nn/metal"]
 
+[build-dependencies]
+datacode_sdk = { path = "datacode_sdk" }
+
 [dependencies]
 datacode_sdk = { path = "datacode_sdk" }
 datacode_abi = { path = "datacode_sdk/datacode_abi" }
 libc = "0.2"
+rand = { version = "0.8", features = ["std"] }
 ndarray = "0.15"
 indicatif = "0.17"
 serde_json = "1.0"
@@ -37,3 +40,8 @@ candle-nn = { version = "0.9", default-features = false, optional = true }
 # Git (not `path = "Datacode_rep"`) so `dpm add ml` clones work without a local VM checkout.
 [dev-dependencies]
 data-code = { git = "https://github.com/igornet0/DataCode", branch = "debug" }
+datacode_ml_compiler = { path = "crates/datacode_ml_compiler" }
+
+[workspace.lints]
+[workspace.lints.rust]
+[workspace.lints.clippy]

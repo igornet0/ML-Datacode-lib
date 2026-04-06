@@ -178,6 +178,7 @@ impl LinearRegression {
 }
 
 // Neural Network model
+use crate::forward_mode::set_forward_training;
 use crate::layer::{Sequential, LayerId};
 use crate::optimizer::{SGD, Momentum, NAG, Adagrad, RMSprop, Adam, AdamW, OptimizerType};
 // Loss functions are imported where needed
@@ -219,6 +220,8 @@ pub struct TrainingHistorySH {
 #[derive(Debug)]
 pub struct NeuralNetwork {
     sequential: Sequential,
+    /// When true, dropout / batch norm use batch statistics and stochastic masks.
+    pub training: bool,
     // param_node_ids removed - using Variable-based approach now
     // Device for this neural network
     device: crate::device::Device,
@@ -244,6 +247,7 @@ impl NeuralNetwork {
         use crate::device::Device;
         Ok(NeuralNetwork {
             sequential,
+            training: false,
             device: Device::Cpu, // Default to CPU
             // Initialize legacy training metadata
             training_epochs: None,
@@ -260,13 +264,14 @@ impl NeuralNetwork {
     
     /// Forward pass: predict outputs for given inputs
     pub fn forward(&mut self, x: &Tensor) -> Result<Tensor, String> {
+        set_forward_training(self.training);
         // Check if input is 1D and needs batch dimension
         let (input_2d, was_1d) = if x.ndim() == 1 {
             // Reshape 1D tensor to 2D: [features] -> [1, features]
             // Ensure tensor is on CPU to access data
             let x_cpu = x.to_cpu()?;
             let new_shape = vec![1, x_cpu.shape()[0]];
-            let input_2d = Tensor::new(x_cpu.data.clone(), new_shape)?;
+            let input_2d = Tensor::new(x_cpu.to_vec(), new_shape)?;
             (input_2d, true)
         } else {
             (x.clone(), false)
@@ -285,7 +290,7 @@ impl NeuralNetwork {
             // Ensure output is on CPU to access data
             let output_cpu = output.to_cpu()?;
             let new_shape = vec![output_cpu.shape()[1]];
-            output = Tensor::new(output_cpu.data.clone(), new_shape)?;
+            output = Tensor::new(output_cpu.to_vec(), new_shape)?;
         }
         
         Ok(output)
@@ -382,7 +387,7 @@ impl NeuralNetwork {
             let target_end = target_start + num_classes;
 
             // Find argmax for logits
-            let logits_row = &logits_cpu.data[logit_start..logit_end];
+            let logits_row = &logits_cpu.as_slice()[logit_start..logit_end];
             let predicted_class = logits_row
                 .iter()
                 .enumerate()
@@ -391,7 +396,7 @@ impl NeuralNetwork {
                 .unwrap_or(0);
 
             // Find argmax for targets (one-hot encoding)
-            let targets_row = &targets_cpu.data[target_start..target_end];
+            let targets_row = &targets_cpu.as_slice()[target_start..target_end];
             let true_class = targets_row
                 .iter()
                 .enumerate()
@@ -438,7 +443,7 @@ impl NeuralNetwork {
             gpu_t.clone()
         } else {
             let shape = Shape::from_dims(&logits.shape());
-            candle_core::Tensor::from_slice(&logits.data, shape, device)
+            candle_core::Tensor::from_slice(logits.as_slice(), shape, device)
                 .map_err(|e| format!("Failed to create logits GPU tensor: {}", e))?
         };
 
@@ -446,7 +451,7 @@ impl NeuralNetwork {
             gpu_t.clone()
         } else {
             let shape = Shape::from_dims(&class_indices.shape());
-            candle_core::Tensor::from_slice(&class_indices.data, shape, device)
+            candle_core::Tensor::from_slice(class_indices.as_slice(), shape, device)
                 .map_err(|e| format!("Failed to create targets GPU tensor: {}", e))?
         };
 
@@ -506,7 +511,7 @@ impl NeuralNetwork {
             gpu_t.clone()
         } else {
             let shape = Shape::from_dims(&logits.shape());
-            candle_core::Tensor::from_slice(&logits.data, shape, device)
+            candle_core::Tensor::from_slice(logits.as_slice(), shape, device)
                 .map_err(|e| format!("Failed to create logits GPU tensor: {}", e))?
         };
 
@@ -514,7 +519,7 @@ impl NeuralNetwork {
             gpu_t.clone()
         } else {
             let shape = Shape::from_dims(&onehot_targets.shape());
-            candle_core::Tensor::from_slice(&onehot_targets.data, shape, device)
+            candle_core::Tensor::from_slice(onehot_targets.as_slice(), shape, device)
                 .map_err(|e| format!("Failed to create targets GPU tensor: {}", e))?
         };
 
@@ -1534,20 +1539,21 @@ impl NeuralNetwork {
                 let mut x_batch_data = Vec::with_capacity(batch_data_size);
                 let x_data_start = start_idx * num_features;
                 let x_data_end = end_idx * num_features;
-                x_batch_data.extend_from_slice(&x_cpu.data[x_data_start..x_data_end]);
+                x_batch_data.extend_from_slice(&x_cpu.as_slice()[x_data_start..x_data_end]);
                 let x_batch = Tensor::new(x_batch_data, vec![current_batch_size, num_features])?;
 
                 let batch_target_size = current_batch_size * num_targets;
                 let mut y_batch_data = Vec::with_capacity(batch_target_size);
                 let y_data_start = start_idx * num_targets;
                 let y_data_end = end_idx * num_targets;
-                y_batch_data.extend_from_slice(&y_cpu.data[y_data_start..y_data_end]);
+                y_batch_data.extend_from_slice(&y_cpu.as_slice()[y_data_start..y_data_end]);
                 let y_batch = Tensor::new(y_batch_data, vec![current_batch_size, num_targets])?;
                 
                 // Zero gradients
                 self.sequential.zero_grad();
 
                 // Forward pass
+                self.training = true;
                 let logits = self.forward(&x_batch)?;
                 
                 // Compute loss
@@ -1649,16 +1655,17 @@ impl NeuralNetwork {
                     let x_start_offset = val_start_idx * num_features;
                     let x_end_offset = val_end_idx * num_features;
                     let mut x_val_batch_data = Vec::with_capacity((val_end_idx - val_start_idx) * num_features);
-                    x_val_batch_data.extend_from_slice(&x_val_ref.data[x_start_offset..x_end_offset]);
+                    x_val_batch_data.extend_from_slice(&x_val_ref.as_slice()[x_start_offset..x_end_offset]);
                     let x_val_batch = Tensor::new(x_val_batch_data, vec![val_current_batch_size, num_features])?;
                     
                     let y_start_offset = val_start_idx * num_targets;
                     let y_end_offset = val_end_idx * num_targets;
                     let mut y_val_batch_data = Vec::with_capacity((val_end_idx - val_start_idx) * num_targets);
-                    y_val_batch_data.extend_from_slice(&y_val_ref.data[y_start_offset..y_end_offset]);
+                    y_val_batch_data.extend_from_slice(&y_val_ref.as_slice()[y_start_offset..y_end_offset]);
                     let y_val_batch = Tensor::new(y_val_batch_data, vec![val_current_batch_size, num_targets])?;
                     
                     // Forward pass on validation batch
+                    self.training = false;
                     let val_logits = self.forward(&x_val_batch)?;
                     let val_logits_cpu = val_logits.to_cpu()?;
                     let y_val_batch_cpu = y_val_batch.to_cpu()?;
@@ -1673,17 +1680,17 @@ impl NeuralNetwork {
                         "cross_entropy" | "sparse_cross_entropy" => {
                             use crate::loss::sparse_softmax_cross_entropy_loss;
                             let loss_tensor = sparse_softmax_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                            loss_tensor.data[0]
+                            loss_tensor.as_slice()[0]
                         }
                         "categorical_cross_entropy" => {
                             use crate::loss::categorical_cross_entropy_loss;
                             let loss_tensor = categorical_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                            loss_tensor.data[0]
+                            loss_tensor.as_slice()[0]
                         }
                         "binary_cross_entropy" => {
                             use crate::loss::binary_cross_entropy_loss;
                             let loss_tensor = binary_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                            loss_tensor.data[0]
+                            loss_tensor.as_slice()[0]
                         }
                         _ => {
                             return Err(format!("Unknown loss type for validation: {}", loss_type));
@@ -2033,7 +2040,7 @@ impl NeuralNetwork {
                     // Copy contiguous chunk instead of row-by-row
                     let x_data_start = start_idx * num_features;
                     let x_data_end = end_idx * num_features;
-                    x_batch_data.extend_from_slice(&x_gpu.data[x_data_start..x_data_end]);
+                    x_batch_data.extend_from_slice(&x_gpu.as_slice()[x_data_start..x_data_end]);
                     let mut x_batch = Tensor::new(x_batch_data, vec![current_batch_size, num_features])?;
                     if device.is_gpu() {
                         x_batch = x_batch.to_device(&device)?;
@@ -2045,7 +2052,7 @@ impl NeuralNetwork {
                     // Copy contiguous chunk instead of row-by-row
                     let y_data_start = start_idx * num_targets;
                     let y_data_end = end_idx * num_targets;
-                    y_batch_data.extend_from_slice(&y_gpu.data[y_data_start..y_data_end]);
+                    y_batch_data.extend_from_slice(&y_gpu.as_slice()[y_data_start..y_data_end]);
                     let mut y_batch = Tensor::new(y_batch_data, vec![current_batch_size, num_targets])?;
                     if device.is_gpu() {
                         y_batch = y_batch.to_device(&device)?;
@@ -2055,6 +2062,7 @@ impl NeuralNetwork {
                     self.sequential.zero_grad();
 
                     // Forward pass - get Variable directly from sequential to enable backward pass
+                    self.training = true;
                     use crate::autograd::Variable;
                     let input_var = Variable::new(x_batch.clone(), false);
                     let logits_var = self.sequential.forward(input_var);
@@ -2258,7 +2266,7 @@ impl NeuralNetwork {
                             let x_start_offset = val_start_idx * num_features;
                             let x_end_offset = val_end_idx * num_features;
                             let mut x_val_batch_data = Vec::with_capacity((val_end_idx - val_start_idx) * num_features);
-                            x_val_batch_data.extend_from_slice(&x_val_ref.data[x_start_offset..x_end_offset]);
+                            x_val_batch_data.extend_from_slice(&x_val_ref.as_slice()[x_start_offset..x_end_offset]);
                             let mut x_val_batch = Tensor::new(x_val_batch_data, vec![val_current_batch_size, num_features])?;
                             if device.is_gpu() {
                                 x_val_batch = x_val_batch.to_device(&device)?;
@@ -2268,13 +2276,14 @@ impl NeuralNetwork {
                             let y_start_offset = val_start_idx * num_targets;
                             let y_end_offset = val_end_idx * num_targets;
                             let mut y_val_batch_data = Vec::with_capacity((val_end_idx - val_start_idx) * num_targets);
-                            y_val_batch_data.extend_from_slice(&y_val_ref.data[y_start_offset..y_end_offset]);
+                            y_val_batch_data.extend_from_slice(&y_val_ref.as_slice()[y_start_offset..y_end_offset]);
                             let mut y_val_batch = Tensor::new(y_val_batch_data, vec![val_current_batch_size, num_targets])?;
                             if device.is_gpu() {
                                 y_val_batch = y_val_batch.to_device(&device)?;
                             }
                             
                             // Forward pass on validation batch
+                            self.training = false;
                             let val_logits = self.forward(&x_val_batch)?;
                             
                             // PERFORMANCE OPTIMIZATION: Compute loss on the same device as tensors
@@ -2297,7 +2306,7 @@ impl NeuralNetwork {
                                     let y_val_batch_cpu = y_val_batch.to_cpu()?;
                                     use crate::loss::sparse_softmax_cross_entropy_loss;
                                     let loss_tensor = sparse_softmax_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                                    loss_tensor.data[0]
+                                    loss_tensor.as_slice()[0]
                                 }
                                 "categorical_cross_entropy" => {
                                     // This loss function requires CPU (access .data directly)
@@ -2305,7 +2314,7 @@ impl NeuralNetwork {
                                     let y_val_batch_cpu = y_val_batch.to_cpu()?;
                                     use crate::loss::categorical_cross_entropy_loss;
                                     let loss_tensor = categorical_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                                    loss_tensor.data[0]
+                                    loss_tensor.as_slice()[0]
                                 }
                                 "binary_cross_entropy" => {
                                     // This loss function requires CPU (access .data directly)
@@ -2313,7 +2322,7 @@ impl NeuralNetwork {
                                     let y_val_batch_cpu = y_val_batch.to_cpu()?;
                                     use crate::loss::binary_cross_entropy_loss;
                                     let loss_tensor = binary_cross_entropy_loss(&val_logits_cpu, &y_val_batch_cpu)?;
-                                    loss_tensor.data[0]
+                                    loss_tensor.as_slice()[0]
                                 }
                                 _ => {
                                     return Err(format!("Unknown loss type for validation: {}", loss_type));
@@ -2976,9 +2985,9 @@ impl NeuralNetwork {
                     .map_err(|e| format!("Failed to convert bias to CPU: {}", e))?;
                 
                 // Get data and shape
-                let weight_data = weight_cpu.data.clone();
+                let weight_data = weight_cpu.to_vec();
                 let weight_shape = weight_cpu.shape().to_vec();
-                let bias_data = bias_cpu.data.clone();
+                let bias_data = bias_cpu.to_vec();
                 let bias_shape = bias_cpu.shape().to_vec();
                 
                 // Store weight tensor data
@@ -3404,7 +3413,7 @@ impl NeuralNetwork {
                     layer_ids.push(layer_id);
                 }
                 "Softmax" => {
-                    let softmax = Softmax;
+                    let softmax = Softmax::new();
                     let layer_id = add_layer_to_registry(Box::new(softmax));
                     layer_ids.push(layer_id);
                 }
@@ -3604,7 +3613,7 @@ impl NeuralNetwork {
         for i in 0..batch_size {
             let row_start = i * num_features;
             let row_end = row_start + num_features;
-            x_batch_data.extend_from_slice(&x.data[row_start..row_end]);
+            x_batch_data.extend_from_slice(&x.as_slice()[row_start..row_end]);
         }
         let x_batch = Tensor::new(x_batch_data, vec![batch_size, num_features])?;
 
@@ -3612,11 +3621,11 @@ impl NeuralNetwork {
         for i in 0..batch_size {
             let row_start = i * num_targets;
             let row_end = row_start + num_targets;
-            y_batch_data.extend_from_slice(&y.data[row_start..row_end]);
+            y_batch_data.extend_from_slice(&y.as_slice()[row_start..row_end]);
         }
         let y_batch = Tensor::new(y_batch_data, vec![batch_size, num_targets])?;
         // Clone y_batch data and shape before loop to avoid borrow conflicts
-        let y_batch_data_clone = y_batch.data.clone();
+        let y_batch_data_clone = y_batch.to_vec();
         let y_batch_shape_clone = y_batch.shape.clone();
 
         // Forward pass to initialize parameters
@@ -3677,7 +3686,7 @@ impl NeuralNetwork {
             let mut failed_elements = 0;
 
             // Sample a few elements to check (to avoid too many computations)
-            let total_elements = param_cpu.data.len();
+            let total_elements = param_cpu.numel();
             let sample_size = total_elements.min(100); // Check at most 100 elements
             let step = if total_elements > sample_size {
                 total_elements / sample_size
@@ -3687,8 +3696,8 @@ impl NeuralNetwork {
 
             for i in (0..total_elements).step_by(step) {
                 checked_elements += 1;
-                let original_value = param_cpu.data[i];
-                let analytical_grad_val = analytical_grad_cpu.data[i];
+                let original_value = param_cpu.as_slice()[i];
+                let analytical_grad_val = analytical_grad_cpu.as_slice()[i];
 
                 // Skip if gradient is zero (might be intentional)
                 if analytical_grad_val.abs() < 1e-8 {
@@ -3697,7 +3706,7 @@ impl NeuralNetwork {
 
                 // Compute numerical gradient: (f(x + eps) - f(x - eps)) / (2 * eps)
                 // Modify parameter
-                let mut param_plus = param_cpu.data.clone();
+                let mut param_plus = param_cpu.to_vec();
                 param_plus[i] = original_value + eps;
                 let param_plus_tensor = Tensor::new(param_plus, param_cpu.shape.clone())?;
                 if device.is_gpu() {
@@ -3723,13 +3732,13 @@ impl NeuralNetwork {
                         let logits_cpu = logits_plus.to_cpu()?;
                         let y_batch_cpu = y_batch_for_loss.to_cpu()?;
                         let loss = sparse_softmax_cross_entropy_loss(&logits_cpu, &y_batch_cpu)?;
-                        loss.data[0]
+                        loss.as_slice()[0]
                     }
                     "categorical_cross_entropy" => {
                         let logits_cpu = logits_plus.to_cpu()?;
                         let y_batch_cpu = y_batch_for_loss.to_cpu()?;
                         let loss = categorical_cross_entropy_loss(&logits_cpu, &y_batch_cpu)?;
-                        loss.data[0]
+                        loss.as_slice()[0]
                     }
                     "mse" => {
                         let diff = logits_plus.sub(&y_batch_for_loss)?;
@@ -3740,7 +3749,7 @@ impl NeuralNetwork {
                 };
 
                 // Modify parameter in opposite direction
-                let mut param_minus = param_cpu.data.clone();
+                let mut param_minus = param_cpu.to_vec();
                 param_minus[i] = original_value - eps;
                 let param_minus_tensor = Tensor::new(param_minus, param_cpu.shape.clone())?;
 
@@ -3763,13 +3772,13 @@ impl NeuralNetwork {
                         let logits_cpu = logits_minus.to_cpu()?;
                         let y_batch_cpu = y_batch_for_loss.to_cpu()?;
                         let loss = sparse_softmax_cross_entropy_loss(&logits_cpu, &y_batch_cpu)?;
-                        loss.data[0]
+                        loss.as_slice()[0]
                     }
                     "categorical_cross_entropy" => {
                         let logits_cpu = logits_minus.to_cpu()?;
                         let y_batch_cpu = y_batch_for_loss.to_cpu()?;
                         let loss = categorical_cross_entropy_loss(&logits_cpu, &y_batch_cpu)?;
-                        loss.data[0]
+                        loss.as_slice()[0]
                     }
                     "mse" => {
                         let diff = logits_minus.sub(&y_batch_for_loss)?;
@@ -3798,7 +3807,7 @@ impl NeuralNetwork {
                 }
 
                 // Restore original parameter value
-                let param_original_tensor = Tensor::new(param_cpu.data.clone(), param_cpu.shape.clone())?;
+                let param_original_tensor = Tensor::new(param_cpu.to_vec(), param_cpu.shape.clone())?;
                 {
                     // Parameter restoration simplified - using Variable-based approach
                     // Parameters are stored in Variables, so we don't restore them directly

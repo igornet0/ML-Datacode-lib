@@ -1134,7 +1134,7 @@ impl Graph {
                     // grad is scalar [1], need to broadcast to input shape
                     // OPTIMIZATION: Use reference directly, only convert to CPU when needed
                     let grad_cpu = grad_ref.to_cpu()?;
-                    let grad_val = grad_cpu.data[0];
+                    let grad_val = grad_cpu.as_slice()[0];
                     let input_shape = &input_values[0].shape;
                     let total_size: usize = input_shape.iter().product();
                     // OPTIMIZATION: Use Vec::with_capacity and fill more efficiently
@@ -1151,7 +1151,7 @@ impl Graph {
                     let grad_cpu = grad_ref.to_cpu()?;
                     let input_shape = &input_values[0].shape;
                     let n = input_values[0].total_size() as f32;
-                    let grad_val = grad_cpu.data[0] / n;
+                    let grad_val = grad_cpu.as_slice()[0] / n;
                     let total_size: usize = input_shape.iter().product();
                     // OPTIMIZATION: Use Vec::with_capacity and fill more efficiently
                     let mut grad_data = Vec::with_capacity(total_size);
@@ -1212,9 +1212,9 @@ impl Graph {
                             // Fallback to CPU
                             let grad_cpu = grad_ref.to_cpu()?;
                             let input_cpu = input_values[0].to_cpu()?;
-                            let grad_data: Vec<f32> = grad_cpu.data
+                            let grad_data: Vec<f32> = grad_cpu.as_slice()
                                 .iter()
-                                .zip(input_cpu.data.iter())
+                                .zip(input_cpu.as_slice().iter())
                                 .map(|(&g, &x)| if x > 0.0 { g } else { 0.0 })
                                 .collect();
                             vec![Tensor::new(grad_data, grad_cpu.shape.clone())?]
@@ -1225,9 +1225,9 @@ impl Graph {
                         // CPU only
                         let grad_cpu = grad_ref.to_cpu()?;
                         let input_cpu = input_values[0].to_cpu()?;
-                        let grad_data: Vec<f32> = grad_cpu.data
+                        let grad_data: Vec<f32> = grad_cpu.as_slice()
                             .iter()
-                            .zip(input_cpu.data.iter())
+                            .zip(input_cpu.as_slice().iter())
                             .map(|(&g, &x)| if x > 0.0 { g } else { 0.0 })
                             .collect();
                         vec![Tensor::new(grad_data, grad_cpu.shape.clone())?]
@@ -1291,9 +1291,9 @@ impl Graph {
                             let grad_cpu = grad_ref.to_cpu()?;
                             let input_cpu = input_values[0].to_cpu()?;
                             let sigmoid_output = input_cpu.sigmoid();
-                            let grad_data: Vec<f32> = grad_cpu.data
+                            let grad_data: Vec<f32> = grad_cpu.as_slice()
                                 .iter()
-                                .zip(sigmoid_output.data.iter())
+                                .zip(sigmoid_output.as_slice().iter())
                                 .map(|(&g, &s)| g * s * (1.0 - s))
                                 .collect();
                             vec![Tensor::new(grad_data, grad_cpu.shape.clone())?]
@@ -1305,9 +1305,9 @@ impl Graph {
                         let grad_cpu = grad_ref.to_cpu()?;
                         let input_cpu = input_values[0].to_cpu()?;
                         let sigmoid_output = input_cpu.sigmoid();
-                        let grad_data: Vec<f32> = grad_cpu.data
+                        let grad_data: Vec<f32> = grad_cpu.as_slice()
                             .iter()
-                            .zip(sigmoid_output.data.iter())
+                            .zip(sigmoid_output.as_slice().iter())
                             .map(|(&g, &s)| g * s * (1.0 - s))
                             .collect();
                         vec![Tensor::new(grad_data, grad_cpu.shape.clone())?]
@@ -1322,9 +1322,9 @@ impl Graph {
                     let grad_cpu = grad_ref.to_cpu()?;
                     let input_cpu = input_values[0].to_cpu()?;
                     let tanh_output = input_cpu.tanh();
-                    let grad_data: Vec<f32> = grad_cpu.data
+                    let grad_data: Vec<f32> = grad_cpu.as_slice()
                         .iter()
-                        .zip(tanh_output.data.iter())
+                        .zip(tanh_output.as_slice().iter())
                         .map(|(&g, &t)| g * (1.0 - t * t))
                         .collect();
                     vec![Tensor::new(grad_data, grad_cpu.shape.clone())?]
@@ -1392,16 +1392,14 @@ impl Graph {
                                     .map_err(|e| format!("Failed to convert result to Vec: {}", e))?
                             };
                             
-                            // Create result tensor with GPU buffer preserved
+                            // Create result tensor with GPU buffer preserved and CPU buffer synced
                             let result_device = input_values[0].device().clone();
-                            let mut result_tensor = Tensor::from_gpu_tensor(
+                            let result_tensor = Tensor::from_gpu_tensor_with_cpu_data(
                                 result_shape,
                                 result_device,
                                 Some(result_gpu),
-                            );
-                            
-                            // Update CPU data for compatibility
-                            result_tensor.data = result_data;
+                                result_data,
+                            )?;
                             
                             vec![result_tensor]
                         } else {
@@ -1418,23 +1416,23 @@ impl Graph {
                                 1
                             };
                             
-                            let mut grad_data = vec![0.0; grad_cpu.data.len()];
+                            let mut grad_data = vec![0.0; grad_cpu.numel()];
                             
                             for i in 0..other_dims {
                                 let start_idx = i * last_dim;
                                 let end_idx = start_idx + last_dim;
                                 
                                 // Compute sum(grad * softmax) for this row
-                                let sum_grad_softmax: f32 = grad_cpu.data[start_idx..end_idx]
+                                let sum_grad_softmax: f32 = grad_cpu.as_slice()[start_idx..end_idx]
                                     .iter()
-                                    .zip(softmax_output.data[start_idx..end_idx].iter())
+                                    .zip(softmax_output.as_slice()[start_idx..end_idx].iter())
                                     .map(|(&g, &s)| g * s)
                                     .sum();
                                 
                                 // Compute gradient: softmax * (grad - sum)
                                 for j in start_idx..end_idx {
-                                    let s = softmax_output.data[j];
-                                    let g = grad_cpu.data[j];
+                                    let s = softmax_output.as_slice()[j];
+                                    let g = grad_cpu.as_slice()[j];
                                     grad_data[j] = s * (g - sum_grad_softmax);
                                 }
                             }
@@ -1457,23 +1455,23 @@ impl Graph {
                             1
                         };
                         
-                        let mut grad_data = vec![0.0; grad_cpu.data.len()];
+                        let mut grad_data = vec![0.0; grad_cpu.numel()];
                         
                         for i in 0..other_dims {
                             let start_idx = i * last_dim;
                             let end_idx = start_idx + last_dim;
                             
                             // Compute sum(grad * softmax) for this row
-                            let sum_grad_softmax: f32 = grad_cpu.data[start_idx..end_idx]
+                            let sum_grad_softmax: f32 = grad_cpu.as_slice()[start_idx..end_idx]
                                 .iter()
-                                .zip(softmax_output.data[start_idx..end_idx].iter())
+                                .zip(softmax_output.as_slice()[start_idx..end_idx].iter())
                                 .map(|(&g, &s)| g * s)
                                 .sum();
                             
                             // Compute gradient: softmax * (grad - sum)
                             for j in start_idx..end_idx {
-                                let s = softmax_output.data[j];
-                                let g = grad_cpu.data[j];
+                                let s = softmax_output.as_slice()[j];
+                                let g = grad_cpu.as_slice()[j];
                                 grad_data[j] = s * (g - sum_grad_softmax);
                             }
                         }
@@ -1503,7 +1501,7 @@ impl Graph {
                     }
                     
                     // grad is scalar [1] from loss node
-                    let grad_value = grad_cpu.data[0];
+                    let grad_value = grad_cpu.as_slice()[0];
                     
                     // Compute softmax of logits
                     let softmax_logits = logits_cpu.softmax()?;
@@ -1516,11 +1514,11 @@ impl Graph {
                     
                     // OPTIMIZATION: Pre-allocate grad_data with known capacity
                     let mut grad_data = Vec::with_capacity(total_size);
-                    grad_data.extend_from_slice(&softmax_logits.data);
+                    grad_data.extend_from_slice(softmax_logits.as_slice());
                     
                     // Subtract one-hot encoding of targets
                     for i in 0..batch_size {
-                        let target_class = targets_cpu.data[i] as usize;
+                        let target_class = targets_cpu.as_slice()[i] as usize;
                         if target_class < num_classes {
                             grad_data[i * num_classes + target_class] -= 1.0;
                         }
@@ -1562,17 +1560,17 @@ impl Graph {
                     }
                     
                     // grad is scalar [1] from loss node
-                    let grad_value = grad_cpu.data[0];
+                    let grad_value = grad_cpu.as_slice()[0];
                     
                     // Compute softmax of logits
                     let softmax_logits = logits_cpu.softmax()?;
                     
                     // Compute gradient: (softmax - targets) / batch_size
                     let batch_size = logits_cpu.shape[0] as f32;
-                    let mut grad_data = Vec::with_capacity(softmax_logits.data.len());
+                    let mut grad_data = Vec::with_capacity(softmax_logits.numel());
                     
-                    for i in 0..softmax_logits.data.len() {
-                        let diff = softmax_logits.data[i] - targets_cpu.data[i];
+                    for i in 0..softmax_logits.numel() {
+                        let diff = softmax_logits.as_slice()[i] - targets_cpu.as_slice()[i];
                         grad_data.push(grad_value * diff / batch_size);
                     }
                     

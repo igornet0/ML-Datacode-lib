@@ -313,3 +313,88 @@ fn test_tensor_chain_operations() {
     }
 }
 
+#[test]
+fn test_one_hot_scalar() {
+    let shape_code = r#"
+        import ml
+        ml.shape(ml.one_hot(1, 10))
+    "#;
+    let s = run_ml(shape_code).expect("one_hot shape");
+    assert_array_equals(&s, &[1.0, 10.0]);
+
+    let data_code = r#"
+        import ml
+        ml.data(ml.one_hot(1, 10))
+    "#;
+    let d = run_ml(data_code).expect("one_hot data");
+    let mut expected = [0.0f64; 10];
+    expected[1] = 1.0;
+    assert_array_equals(&d, &expected);
+}
+
+#[test]
+fn test_onehots_batch() {
+    let code = r#"
+        import ml
+        let labels = ml.tensor([0, 1, 2], [3])
+        let h = ml.onehots(labels, 3)
+        ml.data(h)
+    "#;
+    let d = run_ml(code).expect("onehots");
+    assert_array_equals(
+        &d,
+        &[
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.0, 1.0,
+        ],
+    );
+}
+
+#[test]
+fn test_tensor_numeric_index_row() {
+    let code = r#"
+        import ml
+        let t = ml.one_hot(1, 10)
+        ml.data(t[0])
+    "#;
+    let d = run_ml(code).expect("t[0] row");
+    let mut expected = [0.0f64; 10];
+    expected[1] = 1.0;
+    assert_array_equals(&d, &expected);
+}
+
+/// `tensor([[...], ...])` must accept rows that are tensor handles (`one_hot(...)[0]`), not only nested number arrays.
+#[test]
+fn test_tensor_from_array_of_tensor_rows() {
+    let code = r#"
+        import ml
+        let r0 = ml.one_hot(0, 3)[0]
+        let r1 = ml.one_hot(1, 3)[0]
+        let r2 = ml.one_hot(2, 3)[0]
+        let batch = [r0, r1, r2]
+        let t = ml.tensor(batch)
+        ml.shape(t)
+    "#;
+    let s = run_ml(code).expect("tensor(batch) of tensor rows");
+    assert_array_equals(&s, &[3.0, 3.0]);
+    let data_code = r#"
+        import ml
+        let r0 = ml.one_hot(0, 3)[0]
+        let r1 = ml.one_hot(1, 3)[0]
+        let r2 = ml.one_hot(2, 3)[0]
+        let batch = [r0, r1, r2]
+        let t = ml.tensor(batch)
+        ml.data(t)
+    "#;
+    let d = run_ml(data_code).expect("tensor batch data");
+    assert_array_equals(
+        &d,
+        &[
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.0, 1.0,
+        ],
+    );
+}
+

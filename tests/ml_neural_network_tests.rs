@@ -12,7 +12,7 @@ use ml::dataset::Dataset;
 fn test_tensor_relu() {
     let t = Tensor::new(vec![-1.0, 0.0, 1.0, 2.0], vec![4]).unwrap();
     let result = t.relu();
-    assert_eq!(result.data, vec![0.0, 0.0, 1.0, 2.0]);
+    assert_eq!(result.to_vec(), vec![0.0, 0.0, 1.0, 2.0]);
 }
 
 #[test]
@@ -20,7 +20,7 @@ fn test_tensor_sigmoid() {
     let t = Tensor::new(vec![0.0], vec![1]).unwrap();
     let result = t.sigmoid();
     // sigmoid(0) = 0.5
-    assert!((result.data[0] - 0.5).abs() < 1e-6);
+    assert!((result.as_slice()[0] - 0.5).abs() < 1e-6);
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn test_tensor_tanh() {
     let t = Tensor::new(vec![0.0], vec![1]).unwrap();
     let result = t.tanh();
     // tanh(0) = 0
-    assert!((result.data[0]).abs() < 1e-6);
+    assert!((result.as_slice()[0]).abs() < 1e-6);
 }
 
 #[test]
@@ -37,17 +37,17 @@ fn test_tensor_softmax() {
     let result = t.softmax().unwrap();
     
     // Softmax should sum to 1
-    let sum: f32 = result.data.iter().sum();
+    let sum: f32 = result.as_slice().iter().copied().sum();
     assert!((sum - 1.0).abs() < 1e-5);
     
     // All values should be positive
-    for &val in &result.data {
+    for &val in result.as_slice() {
         assert!(val > 0.0);
     }
     
     // Largest value should have highest probability
-    assert!(result.data[2] > result.data[1]);
-    assert!(result.data[1] > result.data[0]);
+    assert!(result.as_slice()[2] > result.as_slice()[1]);
+    assert!(result.as_slice()[1] > result.as_slice()[0]);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn test_softmax_cross_entropy_loss() {
     let loss = categorical_cross_entropy_loss(&logits, &targets).unwrap();
     
     // Loss should be positive
-    assert!(loss.data[0] > 0.0);
+    assert!(loss.as_slice()[0] > 0.0);
 }
 
 #[test]

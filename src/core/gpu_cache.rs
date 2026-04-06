@@ -73,7 +73,7 @@ impl GpuTensorCache {
         node_id: NodeId,
         cpu_tensor: &Tensor,
     ) -> Result<CandleTensor, String> {
-        let data_hash = Self::compute_data_hash(&cpu_tensor.data);
+        let data_hash = Self::compute_data_hash(cpu_tensor.as_slice());
         
         // Check if we have a cached tensor that's still valid
         if let Some(cached) = self.cache.get(&node_id) {
@@ -90,7 +90,7 @@ impl GpuTensorCache {
         
         use candle_core::Shape;
         let shape = Shape::from_dims(&cpu_tensor.shape);
-        let gpu_tensor = CandleTensor::from_slice(&cpu_tensor.data, shape, &candle_device)
+        let gpu_tensor = CandleTensor::from_slice(cpu_tensor.as_slice(), shape, &candle_device)
             .map_err(|e| format!("Failed to create GPU tensor: {}", e))?;
 
         // Update cache

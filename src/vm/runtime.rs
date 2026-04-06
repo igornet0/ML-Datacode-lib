@@ -10,6 +10,7 @@ use crate::vm_value::Value;
 use crate::ml_types::{MlHandle, MlValueKind};
 
 use crate::dataset::Dataset;
+use crate::datasets::DatasetType;
 use crate::graph::Graph;
 use crate::layer::{LayerId, Sequential};
 use crate::model::{LinearRegression, NeuralNetwork};
@@ -29,6 +30,8 @@ pub enum MlObject {
     NeuralNetwork(Rc<RefCell<NeuralNetwork>>),
     Sequential(Rc<RefCell<Sequential>>),
     Dataset(Rc<RefCell<Dataset>>),
+    /// `load_dataset("mnist"|...)` — materialize on `.split(...)`.
+    DatasetCatalog(DatasetType),
     Sgd(Rc<RefCell<SGD>>),
     Adam(Rc<RefCell<Adam>>),
 }
@@ -99,6 +102,15 @@ pub fn dataset_to_value(d: Dataset) -> Value {
             .insert(id, MlObject::Dataset(Rc::new(RefCell::new(d))));
     });
     MlHandle::new(MlValueKind::Dataset, id).into()
+}
+
+pub fn dataset_catalog_to_value(kind: DatasetType) -> Value {
+    let id = alloc_id();
+    OBJECTS.with(|m| {
+        m.borrow_mut()
+            .insert(id, MlObject::DatasetCatalog(kind));
+    });
+    MlHandle::new(MlValueKind::DatasetCatalog, id).into()
 }
 
 pub fn sgd_to_value(o: SGD) -> Value {
@@ -177,6 +189,15 @@ pub fn get_dataset(id: u64) -> Option<Rc<RefCell<Dataset>>> {
     })
 }
 
+pub fn get_dataset_catalog_kind(id: u64) -> Option<DatasetType> {
+    OBJECTS.with(|m| {
+        m.borrow().get(&id).and_then(|o| match o {
+            MlObject::DatasetCatalog(k) => Some(*k),
+            _ => None,
+        })
+    })
+}
+
 pub fn get_sgd(id: u64) -> Option<Rc<RefCell<SGD>>> {
     OBJECTS.with(|m| {
         m.borrow().get(&id).and_then(|o| match o {
@@ -207,6 +228,123 @@ pub fn as_tensor_ref(v: &Value) -> Option<Rc<RefCell<Tensor>>> {
 #[inline]
 pub fn tensor_data_clone(v: &Value) -> Option<Tensor> {
     as_tensor_ref(v).map(|r| r.borrow().clone())
+}
+
+/// Build a dense tensor from nested `Value::Array` of numbers (row-major, rectangular).
+/// Used when script passes plain arrays instead of `Tensor` handles (e.g. `dataset(features=[...], ...)`).
+pub fn tensor_from_nested_numeric_array(v: &Value) -> Option<Tensor> {
+    let (flat, shape) = flatten_nested_numeric_array(v)?;
+    let expected: usize = shape.iter().product();
+    if flat.len() != expected {
+        return None;
+    }
+    Some(Tensor::from_slice(&flat, &shape))
+}
+
+/// Prefer existing tensor; otherwise nested numeric arrays.
+pub fn tensor_from_value_flexible(v: &Value) -> Option<Tensor> {
+    tensor_data_clone(v).or_else(|| tensor_from_nested_numeric_array(v))
+}
+
+fn flatten_nested_numeric_array(v: &Value) -> Option<(Vec<f32>, Vec<usize>)> {
+    match v {
+        Value::Number(n) => Some((vec![*n as f32], vec![1])),
+        Value::ByteBuffer(bb) => {
+            let slice = &bb.bytes[bb.offset..bb.offset + bb.len];
+            let data: Vec<f32> = slice.iter().map(|&b| b as f32).collect();
+            Some((data, vec![bb.len]))
+        }
+        Value::Array(arr) => {
+            let arr = arr.borrow();
+            if arr.is_empty() {
+                return None;
+            }
+            // Do not branch only on arr[0]: a mix of scalars and row arrays (e.g. first row wrong)
+            // would pick the 1D path and fail later with an opaque error.
+            let all_numbers = arr.iter().all(|x| matches!(x, Value::Number(_)));
+            let all_arrays = arr.iter().all(|x| matches!(x, Value::Array(_)));
+            if all_numbers {
+                let mut out = Vec::with_capacity(arr.len());
+                for x in arr.iter() {
+                    if let Value::Number(n) = x {
+                        out.push(*n as f32);
+                    } else {
+                        return None;
+                    }
+                }
+                return Some((out, vec![arr.len()]));
+            }
+            if all_arrays {
+                let mut inner_shape: Option<Vec<usize>> = None;
+                let mut flat = Vec::new();
+                for row in arr.iter() {
+                    let (sub_flat, sub_shape) = flatten_nested_numeric_array(row)?;
+                    if let Some(ref prev) = inner_shape {
+                        if *prev != sub_shape {
+                            return None;
+                        }
+                    } else {
+                        inner_shape = Some(sub_shape);
+                    }
+                    flat.extend(sub_flat);
+                }
+                let mut full_shape = vec![arr.len()];
+                full_shape.extend(inner_shape?);
+                return Some((flat, full_shape));
+            }
+            let all_tensors = arr.iter().all(|x| tensor_data_clone(x).is_some());
+            if all_tensors {
+                let mut inner_shape: Option<Vec<usize>> = None;
+                let mut flat = Vec::new();
+                for row in arr.iter() {
+                    let t = tensor_data_clone(row)?;
+                    let cpu = t.to_cpu().ok()?;
+                    let sub_shape = cpu.shape().to_vec();
+                    let sub_flat = cpu.to_vec();
+                    if let Some(ref prev) = inner_shape {
+                        if *prev != sub_shape {
+                            return None;
+                        }
+                    } else {
+                        inner_shape = Some(sub_shape);
+                    }
+                    flat.extend(sub_flat);
+                }
+                let mut full_shape = vec![arr.len()];
+                full_shape.extend(inner_shape?);
+                return Some((flat, full_shape));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Detects top-level mix of scalars and row arrays (invalid for `dataset_from_tensors`).
+pub fn features_array_mixed_rows_hint(v: &Value) -> Option<&'static str> {
+    let Value::Array(rc) = v else {
+        return None;
+    };
+    let b = rc.borrow();
+    if b.len() < 2 {
+        return None;
+    }
+    let mut saw_num = false;
+    let mut saw_arr = false;
+    for x in b.iter() {
+        match x {
+            Value::Number(_) => saw_num = true,
+            Value::Array(_) => saw_arr = true,
+            _ => {}
+        }
+    }
+    if saw_num && saw_arr {
+        Some(
+            "Top-level mix of scalars and row arrays: use a uniform layout [N][feature_dim] (each row an array of numbers), not a mix of ints and arrays.",
+        )
+    } else {
+        None
+    }
 }
 
 pub fn as_graph_ref(v: &Value) -> Option<Rc<RefCell<Graph>>> {

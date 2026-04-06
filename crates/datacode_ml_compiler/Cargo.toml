@@ -2,7 +2,7 @@
 name = "datacode_ml_compiler"
 version = "0.1.0"
 edition = "2021"
-description = "Compile-time ML native named-arg metadata for DataCode (sourced from ML-Datacode-lib)"
+description = "Compile-time named-arg metadata for the host data-code compiler (JSON in this crate; ships with ML-Datacode-lib)"
 license = "MIT"
 publish = false
 

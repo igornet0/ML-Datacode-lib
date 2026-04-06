@@ -16,6 +16,9 @@ pub fn shim_with(f: fn(&[Value]) -> Value, args: &[AbiValue]) -> AbiValue {
     let out = f(&values);
     match bridge.value_to_abi(&out) {
         Ok(av) => av,
-        Err(_) => AbiValue::Null,
+        Err(e) => {
+            crate::native_error::set_native_error(format!("ABI return conversion failed: {:?}", e));
+            AbiValue::Null
+        }
     }
 }

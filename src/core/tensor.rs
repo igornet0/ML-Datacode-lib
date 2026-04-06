@@ -44,8 +44,7 @@ pub struct Tensor {
     pub shape: Vec<usize>,  // Public for compatibility with existing code
     strides: Vec<isize>,
     device: Device,
-    pub data: Vec<f32>,  // Public for compatibility - computed from storage
-    
+
     #[cfg(feature = "gpu")]
     /// Lazy GPU tensor storage (None means not yet moved to GPU)
     pub(crate) gpu_tensor: Option<candle_core::Tensor>,
@@ -66,15 +65,13 @@ impl Tensor {
     pub fn from_array(array: ArrayD<f32>) -> Self {
         let shape = array.shape().to_vec();
         let strides = Self::compute_strides(&shape);
-        let data_vec: Vec<f32> = array.iter().copied().collect();
         let storage = TensorStorage::new(array);
-        
+
         Self {
             storage: Arc::new(storage),
             shape: shape.clone(),
             strides,
             device: Device::Cpu,
-            data: data_vec,
     #[cfg(feature = "gpu")]
             gpu_tensor: None,
         }
@@ -84,7 +81,6 @@ impl Tensor {
     pub fn zeros(shape: Vec<usize>) -> Self {
         let strides = Self::compute_strides(&shape);
         let array = ArrayD::zeros(shape.as_slice());
-        let data_vec: Vec<f32> = array.iter().copied().collect();
         let storage = TensorStorage::new(array);
 
         Self {
@@ -92,7 +88,6 @@ impl Tensor {
             shape: shape.clone(),
             strides,
             device: Device::Cpu,
-            data: data_vec,
             #[cfg(feature = "gpu")]
             gpu_tensor: None,
         }
@@ -136,7 +131,6 @@ impl Tensor {
     pub fn ones(shape: Vec<usize>) -> Self {
         let strides = Self::compute_strides(&shape);
         let array = ArrayD::ones(shape.as_slice());
-        let data_vec: Vec<f32> = array.iter().copied().collect();
         let storage = TensorStorage::new(array);
 
         Self {
@@ -144,7 +138,6 @@ impl Tensor {
             shape: shape.clone(),
             strides,
             device: Device::Cpu,
-            data: data_vec,
             #[cfg(feature = "gpu")]
             gpu_tensor: None,
         }
@@ -165,17 +158,51 @@ impl Tensor {
     ) -> Self {
         let strides = Self::compute_strides(&shape);
         let array = ArrayD::zeros(shape.as_slice());
-        let data_vec: Vec<f32> = array.iter().copied().collect();
         let storage = TensorStorage::new(array);
-        
+
         Self {
             storage: Arc::new(storage),
             shape,
             strides,
             device,
-            data: data_vec,
             gpu_tensor,
         }
+    }
+
+    /// GPU tensor with CPU buffer already materialized (e.g. softmax backward on GPU path).
+    #[cfg(feature = "gpu")]
+    pub(crate) fn from_gpu_tensor_with_cpu_data(
+        shape: Vec<usize>,
+        device: Device,
+        gpu_tensor: Option<candle_core::Tensor>,
+        cpu_data: Vec<f32>,
+    ) -> Result<Self, String> {
+        if shape.is_empty() {
+            return Err("Shape cannot be empty".to_string());
+        }
+        if shape.iter().any(|&s| s == 0) {
+            return Err("Shape dimensions cannot be zero".to_string());
+        }
+        let expected_size: usize = shape.iter().product();
+        if cpu_data.len() != expected_size {
+            return Err(format!(
+                "Data size {} does not match shape {:?} (expected {})",
+                cpu_data.len(),
+                shape,
+                expected_size
+            ));
+        }
+        let strides = Self::compute_strides(&shape);
+        let array = ArrayD::from_shape_vec(shape.as_slice(), cpu_data)
+            .map_err(|e| format!("Invalid tensor buffer: {}", e))?;
+        let storage = TensorStorage::new(array);
+        Ok(Self {
+            storage: Arc::new(storage),
+            shape: shape.clone(),
+            strides,
+            device,
+            gpu_tensor,
+        })
     }
 
     /// Создать тензор из Vec<f32> и shape (для совместимости)
@@ -345,7 +372,7 @@ impl Tensor {
             // Create GPU tensor from CPU data
             use candle_core::Shape;
             let shape = Shape::from_dims(&self.shape);
-            let gpu_tensor = candle_core::Tensor::from_slice(&self.data, shape, &candle_device)
+            let gpu_tensor = candle_core::Tensor::from_slice(self.as_slice(), shape, &candle_device)
                 .map_err(|e| format!("Failed to create GPU tensor: {}", e))?;
             
             Ok(Tensor::from_gpu_tensor(
@@ -561,6 +588,80 @@ impl Tensor {
         let arr = self.data();
         let slice = arr.index_axis(ndarray::Axis(0), index).to_owned();
         Ok(Tensor::from_array(slice.into_dyn()))
+    }
+
+    /// Select rows along axis 0 (order preserved). Indices may repeat.
+    pub fn take_rows(&self, row_indices: &[usize]) -> Result<Tensor, String> {
+        if self.shape.is_empty() {
+            return Err("take_rows: empty shape".to_string());
+        }
+        let n = self.shape[0];
+        let row_len: usize = self.shape[1..].iter().product();
+        if row_indices.is_empty() {
+            return Err("take_rows: empty row_indices".to_string());
+        }
+        for &i in row_indices {
+            if i >= n {
+                return Err(format!(
+                    "take_rows: index {} out of bounds for axis 0 (size {})",
+                    i, n
+                ));
+            }
+        }
+        let arr = self.data();
+        let mut flat: Vec<f32> = Vec::with_capacity(row_indices.len() * row_len);
+        for &i in row_indices {
+            let slice = arr.index_axis(ndarray::Axis(0), i);
+            flat.extend(slice.iter().copied());
+        }
+        let mut out_shape = self.shape.clone();
+        out_shape[0] = row_indices.len();
+        Tensor::new(flat, out_shape)
+    }
+
+    /// Concatenate one or more tensors along axis 0 in a single allocation.
+    /// Trailing dimensions must match across all operands.
+    pub fn concat_axis0_many(tensors: &[&Tensor]) -> Result<Tensor, String> {
+        if tensors.is_empty() {
+            return Err("concat_axis0_many: empty list".to_string());
+        }
+        if tensors.len() == 1 {
+            return Ok(tensors[0].clone());
+        }
+        let rank = tensors[0].shape.len();
+        if rank == 0 {
+            return Err("concat_axis0_many: empty shape".to_string());
+        }
+        for t in tensors {
+            if t.shape.len() != rank {
+                return Err(format!(
+                    "concat_axis0_many: rank mismatch {:?} vs {:?}",
+                    tensors[0].shape, t.shape
+                ));
+            }
+            for i in 1..rank {
+                if t.shape[i] != tensors[0].shape[i] {
+                    return Err(format!(
+                        "concat_axis0_many: shape mismatch at dim {}: {:?} vs {:?}",
+                        i, tensors[0].shape, t.shape
+                    ));
+                }
+            }
+        }
+        let total_rows: usize = tensors.iter().map(|t| t.shape[0]).sum();
+        let row_elems: usize = tensors[0].shape[1..].iter().product();
+        let mut flat: Vec<f32> = Vec::with_capacity(total_rows * row_elems);
+        for t in tensors {
+            flat.extend_from_slice(t.as_slice());
+        }
+        let mut new_shape = tensors[0].shape.clone();
+        new_shape[0] = total_rows;
+        Tensor::new(flat, new_shape)
+    }
+
+    /// Concatenate two tensors along axis 0 (batch). Trailing dimensions must match.
+    pub fn concat_axis0(&self, other: &Tensor) -> Result<Tensor, String> {
+        Tensor::concat_axis0_many(&[self, other])
     }
 
     pub fn broadcast_to(&self, target_shape: &[usize]) -> Result<Tensor, String> {

@@ -23,6 +23,10 @@ pub enum MlValueKind {
     NeuralNetwork = 11,
     Sequential = 12,
     Layer = 13,
+    /// Callable thunk for `model.device(...)`, `model.train(...)`, etc. (plugin-owned id → registry).
+    BoundMethod = 14,
+    /// Builtin dataset handle from `load_dataset` (paths resolved on `.split(...)`, not materialized yet).
+    DatasetCatalog = 15,
 }
 
 impl TryFrom<u8> for MlValueKind {
@@ -44,6 +48,8 @@ impl TryFrom<u8> for MlValueKind {
             11 => Ok(Self::NeuralNetwork),
             12 => Ok(Self::Sequential),
             13 => Ok(Self::Layer),
+            14 => Ok(Self::BoundMethod),
+            15 => Ok(Self::DatasetCatalog),
             _ => Err(()),
         }
     }

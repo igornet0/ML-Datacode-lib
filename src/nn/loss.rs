@@ -369,7 +369,7 @@ pub fn sparse_softmax_cross_entropy_loss_gpu(
     } else {
         // Convert to GPU if not already there
         let shape = Shape::from_dims(logits_shape);
-        candle_core::Tensor::from_slice(&logits.data, shape, device)
+        candle_core::Tensor::from_slice(logits.as_slice(), shape, device)
             .map_err(|e| format!("Failed to create logits GPU tensor: {}", e))?
     };
 
@@ -378,7 +378,7 @@ pub fn sparse_softmax_cross_entropy_loss_gpu(
     } else {
         // Convert to GPU if not already there
         let shape = Shape::from_dims(target_shape);
-        candle_core::Tensor::from_slice(&target_indices.data, shape, device)
+        candle_core::Tensor::from_slice(target_indices.as_slice(), shape, device)
             .map_err(|e| format!("Failed to create targets GPU tensor: {}", e))?
     };
 

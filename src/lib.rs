@@ -17,17 +17,32 @@ mod vm_value;
 mod plugin_abi_bridge;
 #[path = "vm/abi_shim.rs"]
 mod abi_shim;
+#[path = "vm/bound_method.rs"]
+mod bound_method;
 #[path = "vm/module_entry.rs"]
 mod module_entry;
 
 #[path = "core/tensor.rs"]
 pub mod tensor;
+#[path = "core/datasets/mnist_path.rs"]
+pub mod mnist_path;
+#[path = "core/datasets/cifar_path.rs"]
+pub mod cifar_path;
+#[path = "core/datasets/mod.rs"]
+pub mod datasets;
+
 #[path = "nn/dataset.rs"]
 pub mod dataset;
+mod dataset_split_abi;
+mod dataset_push_data_abi;
+pub use dataset_split_abi::DATASET_SPLIT_NAMED_ARG_NAMES;
+pub use dataset_push_data_abi::DATASET_PUSH_DATA_NAMED_ARG_NAMES;
 #[path = "engine/autograd.rs"]
 pub mod autograd;
 #[path = "engine/ops.rs"]
 pub mod ops;
+#[path = "engine/conv.rs"]
+pub mod conv;
 #[path = "engine/graph.rs"]
 pub mod graph;
 #[path = "nn/model.rs"]
@@ -36,6 +51,8 @@ pub mod model;
 pub mod optimizer;
 #[path = "nn/loss.rs"]
 pub mod loss;
+#[path = "forward_mode.rs"]
+pub mod forward_mode;
 #[path = "nn/layer.rs"]
 pub mod layer;
 #[path = "core/device.rs"]
@@ -59,10 +76,11 @@ mod candle_integration;
 #[path = "core/backend_registry.rs"]
 pub mod backend_registry;
 
-#[path = "core/mnist_paths.rs"]
-pub mod mnist_paths;
-#[path = "core/mnist_locate.rs"]
-mod mnist_locate;
+#[path = "core/datasets_manager.rs"]
+mod datasets_manager;
+mod builtin_datasets;
+pub use builtin_datasets::{ensure_builtin_dataset_ready, materialize_catalog_full};
+pub use datasets_manager::{resolve_dataset_paths, ResolvedDatasetPaths};
 
 pub use autograd::{Variable, requires_grad};
 pub use graph::{Graph, Node, NodeId, OpType};
@@ -73,8 +91,9 @@ pub use loss::{
     kl_divergence, mae_loss, mse_loss, smooth_l1_loss, sparse_softmax_cross_entropy_loss,
 };
 pub use layer::{
-    add_layer_to_registry, forward_layer_var, Layer, LayerId, Linear, ReLU, Sequential, Sigmoid,
-    Softmax, Tanh, Flatten, with_layer,
+    add_layer_to_registry, forward_layer_var, Elu, Flatten, Gelu, Layer, LayerId, LayerType,
+    LeakyReLU, Linear, LogSoftmax, PReLU, ReLU, Selu, Sequential, Sigmoid, Softmax, Softplus, Tanh,
+    with_layer,
 };
 pub use device::Device;
 pub use gpu_cache::{
@@ -87,6 +106,7 @@ pub use tensor_pool::{
 pub use context::MlContext;
 pub use tensor::Tensor;
 pub use backend_registry::BackendRegistry;
+pub use datasets::{parse_builtin_dataset_name, DatasetType};
 
 pub use datacode_abi;
 pub use datacode_sdk;

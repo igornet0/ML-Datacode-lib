@@ -1,0 +1,106 @@
+from ml import dataset, one_hot, tensor
+from system import hardware
+
+# CIFAR-10: 10 classes; метка — первый байт записи (3073 = 1 + 3072 пикселей).
+NUM_CLASSES = 10
+
+global ENV = "dev"
+
+dataset_image_path = "./image-dataset" / "cifar-10-batches-bin"
+
+fn export_data(data: array) {
+    labels = []
+    pixels_list = []
+    
+    if ENV == "dev" {
+    print("${len(data)=}")
+    print("${len(data)/3073=}")
+    count_err_label = 0
+    }
+
+    for chunk in data.chunk(3073) {
+        if len(chunk) != 3073 {
+            print("ERROR - chunk != 3073")
+            continue
+        }0
+
+        label = chunk[0]
+
+        if !isinstance(label, int) {
+            if ENV == "dev" {
+                if count_err_label < 5 {
+                    print("ERROR - label(${len(label)}) != 1")
+                    print("${typeof(label)=}")
+                }
+                count_err_label += 1
+            }
+            continue
+        }
+
+        pixels = chunk[1:]
+
+        labels.push(label)
+        pixels_list.push(pixels)
+    }
+    if ENV == "dev" {print("${count_err_label=}")}
+
+    max_l = max(labels)
+
+    if ENV == "dev" {
+        min_l = min(labels)
+        print("${max_l=}")
+        print("${min_l=}")
+        print("-"*10)
+        if len(labels) > 0 {
+            print("typeof(labels[0])=${typeof(labels[0])}")
+            print("len(pixels_list[0])=${len(pixels_list[0])}")
+        }
+        for i, x in enum(labels) {
+            if isinstance(x, int) {
+                continue
+            }
+            print("dev: expected number label, got ${typeof(x)} at index ${i} str=${str(x)}")
+            break
+        }
+        if len(labels) > 0 and isinstance(labels[0], int) {
+            sample = one_hot(labels[0], NUM_CLASSES)
+            print("dev: one_hot(labels[0], NUM_CLASSES).shape=${sample.shape}")
+        }
+        print()
+    }
+
+    labels_one_hot = map(labels, fn(x) => one_hot(x, max_l+1)[0])
+
+    if ENV == "dev" {print("typeof(labels_one_hot)=${typeof(labels_one_hot)} typeof(row0)=${typeof(labels_one_hot[0])}")}
+
+    labels = tensor(labels_one_hot)
+    pixels_tensor = tensor(pixels_list)
+
+    #print("${labels.shape=}\n${pixels_tensor.shape=}")
+
+    return labels, pixels_tensor
+}
+
+fn load_image_from_path(path: Path, type_data: "train" | "test" = "train") {
+
+    print("Поиск файлов *.bin в ${str(path)}")
+
+    for i, file in enum(list_files(path, regex="${type_data}*.bin")) {
+        return dataset(fn() => export_data(read_file_bin(file)))
+    }
+}
+
+fn __main__(env: "dev" | "prod" = "dev") {
+    print("env - ${env}")
+    ENV = env
+    load_image_from_path(dataset_image_path, "train")
+    load_image_from_path(dataset_image_path, "test")
+}
+
+"""
+if !isinstance(ds_train, dataset) {
+                ds_train = dataset(X, y)
+            } else {
+                ds_train.concat(other = dataset(X, y))
+            }
+"""

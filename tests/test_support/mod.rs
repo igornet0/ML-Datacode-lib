@@ -1,9 +1,10 @@
 //! Shared setup for integration tests that run DataCode VM code with `import ml`.
-//! Copies `libml` cdylib into DPM-style `tests/fixtures/env/packages/ml/` and sets
-//! `file_import::set_dpm_package_paths` before each `run`.
+//! Copies `libml` cdylib and repo-root [`setup.dcmodule`](../../setup.dcmodule) into DPM-style
+//! `tests/fixtures/env/packages/ml/`, then sets `file_import::set_dpm_package_paths` before each `run`.
 //!
 //! Prefer the dylib produced by the **same** `cargo test` invocation (`target/{debug|release}/deps/libml.*`)
-//! to avoid a nested `cargo build` and ABI/profile skew.
+//! so the VM can resolve the native package. If `libml` is missing, run `cargo build` (or `cargo test --no-run`)
+//! and ensure `crate-type` includes `cdylib` in the root [`Cargo.toml`](../../Cargo.toml).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use data_code::vm::file_import;
-use data_code::{run, LangError, Value};
+use data_code::{run_with_base_path, LangError, Value};
 
 /// Opaque tag for ML tensors in the VM (`Value::PluginOpaque`), matching `ml::MlValueKind::Tensor`.
 #[allow(dead_code)]
@@ -132,16 +133,52 @@ fn copy_dylib_to_packages(src: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Copies [`setup.dcmodule`](../../setup.dcmodule) next to the dylib so `import ml` resolves like a DPM package.
+fn copy_setup_dcmodule_to_packages() -> Result<(), String> {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("setup.dcmodule");
+    if !src.is_file() {
+        return Err(format!(
+            "setup.dcmodule not found at {} (repo root)",
+            src.display()
+        ));
+    }
+    let dest_dir = packages_root().join("ml");
+    fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    let dest = dest_dir.join("setup.dcmodule");
+    fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn ensure_ml_native() {
     ML_NATIVE_READY.get_or_init(|| {
         let _guard = SETUP_LOCK.lock().expect("setup lock");
-        let src = resolve_dylib_src().expect("resolve libml dylib");
+        let src = resolve_dylib_src().unwrap_or_else(|e| {
+            panic!(
+                "resolve libml dylib failed: {}\n\
+                 Hint: run `cargo build` from the repo root so `target/{}/deps/{}` exists.",
+                e,
+                if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
+                dylib_filename()
+            );
+        });
         copy_dylib_to_packages(&src).expect("copy libml to packages/ml");
+        copy_setup_dcmodule_to_packages().expect("copy setup.dcmodule to packages/ml");
     });
 }
 
+pub fn ml_package_dir() -> PathBuf {
+    packages_root().join("ml")
+}
+
+/// Runs DataCode source with `import ml` resolving to the copied `libml` cdylib.
+/// Native loader looks for `libml.*` in the VM **base path** (see `data-code` `native_loader`),
+/// not only under DPM roots — so base path must be the `packages/ml` directory.
 pub fn run_ml(source: &str) -> Result<Value, LangError> {
     ensure_ml_native();
     file_import::set_dpm_package_paths(vec![packages_root()]);
-    run(source)
+    run_with_base_path(source, &ml_package_dir())
 }

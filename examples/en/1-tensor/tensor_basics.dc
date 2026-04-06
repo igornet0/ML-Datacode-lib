@@ -1,0 +1,57 @@
+# Tensor basics: creation, viewing, and operations via the `ml` module (CPU).
+# (see README in this folder).
+
+import ml
+
+# --- Creation: nested lists define shape (row-major storage) ---
+v = ml.tensor([1, 2, 3, 4])
+m = ml.tensor([[1, 2, 3], [4, 5, 6]])
+
+print("${str(v)=} \n${str(m)=}")
+
+# Explicit: flat array + shape [rows, columns]
+m2 = ml.tensor([10, 20, 30, 40], [2, 2])
+print("${str(m2)=}")
+print("1D vector:", typeof(v), "shape", v.shape)
+print("2x3 matrix, shape:", m.shape)
+print("2x2 matrix from flat array:", m2.shape)
+print()
+
+# Raw elements as a flat array of numbers
+print("data(v):", ml.data(v), " ${typeof(ml.data(v))=}")
+print()
+
+# --- Element-wise ops (same shape) ---
+a = ml.tensor([[1, 2], [3, 4]])
+b = ml.tensor([[10, 20], [30, 40]])
+s = a + b
+print("${str(a)=} \n${str(b)=} \n${str(s)=}")
+print("a + b, first row:", ml.data(s)[0], ml.data(s)[1])
+print("b - a, corner:", str(b - a), "${typeof(b - a)=}")
+print("a * b, corner:", str(a*b))
+# Built-in sum / average on tensor: reduce along last axis (for 2D, per row), shape [rows, 1]
+print("sum(a):", str(sum(a)), "average(a):", str(average(a)))
+# Sum/mean over all elements — via flat ml.data (array of numbers)
+print("over all elements:", sum(ml.data(a)), average(ml.data(a)))
+print()
+
+# --- Linear algebra (2D) ---
+x = ml.tensor([[1, 2], [3, 4]])
+xt = x.T
+print("${str(x)=} ${str(xt)=}")
+prod = x @ xt
+print("shape of x @ x.T:", prod.shape)
+print(" x @ x.T = ", str(prod))
+print()
+
+# --- Stats and argmax / argmin ---
+t = ml.tensor([0.2, 0.5, 0.1, 0.9])
+print("${str(t)=}")
+print("max(t), min(t):", max(t), min(t))
+print("argmax index:", ml.max_idx(t))
+print("argmin index:", ml.min_idx(t))
+
+# --- One-hot row (single label) ---
+t = ml.one_hot(1, 10)  # shape [1, 10], one at index 1
+print("${t.shape=}")
+print("t = ${str(t)}")

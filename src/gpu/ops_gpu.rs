@@ -13,7 +13,7 @@ impl Tensor {
         use candle_core::Shape;
         
         let shape = Shape::from_dims(&self.shape);
-        let tensor = candle_core::Tensor::from_slice(&self.data, shape, device)
+        let tensor = candle_core::Tensor::from_slice(self.as_slice(), shape, device)
             .map_err(|e| format!("Failed to create candle tensor: {}", e))?;
         Ok(tensor)
     }
@@ -43,7 +43,7 @@ impl Tensor {
         } else {
             // Create new GPU buffer only if not exists
             let shape_a = Shape::from_dims(&self.shape);
-            candle_core::Tensor::from_slice(&self.data, shape_a, device)
+            candle_core::Tensor::from_slice(self.as_slice(), shape_a, device)
                 .map_err(|e| format!("Failed to create tensor A on GPU: {}", e))?
         };
         
@@ -53,7 +53,7 @@ impl Tensor {
         } else {
             // Create new GPU buffer only if not exists
             let shape_b = Shape::from_dims(&other.shape);
-            candle_core::Tensor::from_slice(&other.data, shape_b, device)
+            candle_core::Tensor::from_slice(other.as_slice(), shape_b, device)
                 .map_err(|e| format!("Failed to create tensor B on GPU: {}", e))?
         };
         
@@ -114,7 +114,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_a = Shape::from_dims(&self.shape);
-            candle_core::Tensor::from_slice(&self.data, shape_a, device)
+            candle_core::Tensor::from_slice(self.as_slice(), shape_a, device)
                 .map_err(|e| format!("Failed to create tensor A on GPU: {}", e))?
         };
         
@@ -122,7 +122,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_b = Shape::from_dims(&other.shape);
-            candle_core::Tensor::from_slice(&other.data, shape_b, device)
+            candle_core::Tensor::from_slice(other.as_slice(), shape_b, device)
                 .map_err(|e| format!("Failed to create tensor B on GPU: {}", e))?
         };
         
@@ -183,7 +183,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_a = Shape::from_dims(&self.shape);
-            candle_core::Tensor::from_slice(&self.data, shape_a, device)
+            candle_core::Tensor::from_slice(self.as_slice(), shape_a, device)
                 .map_err(|e| format!("Failed to create tensor A on GPU: {}", e))?
         };
         
@@ -191,7 +191,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_b = Shape::from_dims(&other.shape);
-            candle_core::Tensor::from_slice(&other.data, shape_b, device)
+            candle_core::Tensor::from_slice(other.as_slice(), shape_b, device)
                 .map_err(|e| format!("Failed to create tensor B on GPU: {}", e))?
         };
         
@@ -232,7 +232,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_a = Shape::from_dims(&self.shape);
-            candle_core::Tensor::from_slice(&self.data, shape_a, device)
+            candle_core::Tensor::from_slice(self.as_slice(), shape_a, device)
                 .map_err(|e| format!("Failed to create tensor A on GPU: {}", e))?
         };
         
@@ -240,7 +240,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape_b = Shape::from_dims(&other.shape);
-            candle_core::Tensor::from_slice(&other.data, shape_b, device)
+            candle_core::Tensor::from_slice(other.as_slice(), shape_b, device)
                 .map_err(|e| format!("Failed to create tensor B on GPU: {}", e))?
         };
         
@@ -279,9 +279,9 @@ impl Tensor {
         let shape_a = Shape::from_dims(&self.shape);
         let shape_b = Shape::from_dims(&other.shape);
         
-        let a = candle_core::Tensor::from_slice(&self.data, shape_a, device)
+        let a = candle_core::Tensor::from_slice(self.as_slice(), shape_a, device)
             .map_err(|e| format!("Failed to create tensor A on GPU: {}", e))?;
-        let b = candle_core::Tensor::from_slice(&other.data, shape_b, device)
+        let b = candle_core::Tensor::from_slice(other.as_slice(), shape_b, device)
             .map_err(|e| format!("Failed to create tensor B on GPU: {}", e))?;
         
         let result = (&a / &b)
@@ -321,7 +321,7 @@ impl Tensor {
         }
         
         let shape = Shape::from_dims(&self.shape);
-        let a = candle_core::Tensor::from_slice(&self.data, shape, device)
+        let a = candle_core::Tensor::from_slice(self.as_slice(), shape, device)
             .map_err(|e| format!("Failed to create tensor on GPU: {}", e))?;
         
         // Create a scalar tensor and use broadcasting
@@ -369,7 +369,7 @@ impl Tensor {
             gpu_t.clone()
         } else {
             let shape = Shape::from_dims(&self.shape);
-            candle_core::Tensor::from_slice(&self.data, shape, device)
+            candle_core::Tensor::from_slice(self.as_slice(), shape, device)
                 .map_err(|e| format!("Failed to create tensor on GPU: {}", e))?
         };
         

@@ -1,0 +1,49 @@
+# Набор данных из тензоров признаков и целей (см. README в этой папке).
+# `dataset` — namespace в `ml`.
+
+from ml import dataset
+
+X = [1, 2, 3, 4, 5, 6, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 2, 3, 4, 1, 2, 3, 4,
+    1, 2, 3, 4, 5, 6, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 2, 3, 4, 1, 2, 3, 4]
+y = [[2, 3], [5, 7], [5, 6], [8, 0], [8, 0], [8, 0], [5, 7], 
+    [5, 6], [8, 0], [5, 7], [5, 6], [8, 0], [8, 0],
+    [2, 3], [5, 7], [5, 6], [8, 0], [8, 0], [8, 0], [5, 7], 
+    [5, 6], [8, 0], [5, 7], [5, 6], [8, 0], [8, 0],
+    [2, 3], [5, 7], [5, 6], [8, 0], [8, 0], [8, 0], [5, 7], 
+    [5, 6], [8, 0], [5, 7], [5, 6], [8, 0], [8, 0],
+    [2, 3], [5, 7], [5, 6], [8, 0], [8, 0], [8, 0], [5, 7], 
+    [5, 6], [8, 0], [5, 7], [5, 6], [8, 0], [8, 0]]
+
+print("${typeof(dataset)=}")
+
+#ds = dataset(features=X, targets=y)
+ds = dataset(X, y)
+print("${typeof(ds)=}")
+
+print("len(ds):", len(ds))
+print("features shape:", ds.features.shape)
+print("targets shape:", ds.targets.shape)
+
+ds_train, ds_test = ds.split(
+    shuffle = true,
+    stratify = true
+)
+
+x_train = ds_train.features
+y_train = ds_train.targets
+
+print("max(x_train)=", max(x_train))
+print("min(x_train)=", min(x_train))
+
+print("train features shape:", x_train.shape)
+print("train targets shape:", y_train.shape)
+
+for x, y in ds_train {
+    print("train_x=${str(x)}\ntrain_y=${str(y)}\n")
+}
+
+print()
+
+for x, y in ds_test {
+    print("test_x=${str(x)}\ntest_y=${str(y)}\n")
+}

@@ -58,22 +58,8 @@ impl TensorPool {
         
         // Try to get a tensor from the pool
         if let Some(pool) = self.pools.get_mut(&key) {
-            if let Some(mut tensor) = pool.pop() {
-                // Found a tensor in the pool - clear its data and reuse
-                // OPTIMIZATION: Reuse the tensor's memory allocation
-                let total_size: usize = shape.iter().product();
-                if tensor.data.len() >= total_size {
-                    // Reuse existing allocation - just clear the data
-                    tensor.data.truncate(total_size);
-                    tensor.data.fill(0.0);
-                } else {
-                    // Need to resize - create new tensor with correct shape
-                    // Note: With new Tensor structure, we can't mutate in place
-                    // So we'll create a new tensor instead
-                }
-                // Note: With new Tensor structure using Arc<TensorStorage>,
-                // we can't mutate shape/device in place. This method needs redesign.
-                // For now, create a new tensor with the correct device
+            if let Some(_tensor) = pool.pop() {
+                // Tensor uses Arc-backed storage; pool entry is a hint to allocate fresh zeros.
                 let new_tensor = Tensor::zeros_with_device(shape, device);
                 return Ok(new_tensor);
             }
@@ -218,7 +204,7 @@ mod tests {
         // Get a tensor from empty pool - should create new one
         let tensor1 = pool.get(vec![2, 3], Device::Cpu).unwrap();
         assert_eq!(tensor1.shape, vec![2, 3]);
-        assert_eq!(tensor1.data.len(), 6);
+        assert_eq!(tensor1.numel(), 6);
         
         // Return it to pool
         pool.return_tensor(tensor1);
@@ -226,7 +212,7 @@ mod tests {
         // Get another tensor with same shape - should reuse
         let tensor2 = pool.get(vec![2, 3], Device::Cpu).unwrap();
         assert_eq!(tensor2.shape, vec![2, 3]);
-        assert_eq!(tensor2.data.len(), 6);
+        assert_eq!(tensor2.numel(), 6);
         
         // Pool should have stats
         let stats = pool.stats();

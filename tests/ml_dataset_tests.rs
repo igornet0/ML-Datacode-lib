@@ -182,7 +182,7 @@ fn test_mnist_dataset_size() {
     let code = r#"
         import ml
         let dataset_train = ml.load_mnist("train")
-        ml.dataset_len(dataset_train)
+        len(dataset_train)
     "#;
     let result = run_ml(code);
     assert!(result.is_ok(), "Test failed with error: {:?}", result);
@@ -332,4 +332,100 @@ fn test_mnist_dataset_label_values() {
         }
         _ => panic!("Expected Array for min/max labels"),
     }
+}
+
+// --- `ml.load_dataset` + `.split(...)` (каталог, те же файлы MNIST, что и `load_mnist`)
+
+#[test]
+fn test_load_dataset_mnist_typeof() {
+    let code = r#"
+        import ml
+        let d = ml.load_dataset("mnist")
+        typeof(d)
+    "#;
+    let result = run_ml(code);
+    assert!(result.is_ok(), "{:?}", result);
+    match result.unwrap() {
+        Value::String(s) => assert_eq!(s, "plugin_opaque"),
+        _ => panic!("expected typeof catalog handle"),
+    }
+}
+
+#[test]
+fn test_load_dataset_split_train_len() {
+    let code = r#"
+        import ml
+        let catalog = ml.load_dataset("mnist")
+        let dataset_train = catalog.split("train")
+        ml.dataset_len(dataset_train)
+    "#;
+    let result = run_ml(code);
+    assert!(result.is_ok(), "{:?}", result);
+    match result.unwrap() {
+        Value::Number(n) => assert_eq!(n as usize, 60000),
+        _ => panic!("expected train size 60000"),
+    }
+}
+
+#[test]
+fn test_load_dataset_split_test_len() {
+    let code = r#"
+        import ml
+        let catalog = ml.load_dataset("mnist")
+        let dataset_test = catalog.split("test")
+        ml.dataset_len(dataset_test)
+    "#;
+    let result = run_ml(code);
+    assert!(result.is_ok(), "{:?}", result);
+    match result.unwrap() {
+        Value::Number(n) => assert_eq!(n as usize, 10000),
+        _ => panic!("expected test size 10000"),
+    }
+}
+
+#[test]
+fn test_load_dataset_split_train_features_shape() {
+    let code = r#"
+        import ml
+        let catalog = ml.load_dataset("mnist")
+        let dataset_train = catalog.split("train")
+        let features = ml.dataset_features(dataset_train)
+        ml.shape(features)
+    "#;
+    let result = run_ml(code);
+    assert!(result.is_ok(), "{:?}", result);
+    match result.unwrap() {
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            assert_eq!(arr_ref.len(), 2);
+            match (&arr_ref[0], &arr_ref[1]) {
+                (Value::Number(n1), Value::Number(n2)) => {
+                    assert_eq!(*n1 as usize, 60000);
+                    assert_eq!(*n2 as usize, 784);
+                }
+                _ => panic!("expected shape numbers"),
+            }
+        }
+        _ => panic!("expected shape array"),
+    }
+}
+
+#[test]
+fn test_load_dataset_sklearn_split_sizes() {
+    // Sklearn-style `catalog.split(test_size=0.2, shuffle=false)` is implemented in
+    // `native_plugin_call` / `Dataset::split`, but the DataCode VM compiler currently resolves
+    // `.split(...)` on values inferred from `ml.load_dataset` as `string.split` (see
+    // `examples/ru/2-dataset/2-mnist.dc` when run as a file vs inline snippets). Assert the same
+    // partition here via the public `Dataset::split` path used after `materialize_catalog_full`.
+    use ml::{ensure_builtin_dataset_ready, materialize_catalog_full};
+    use ml::datasets::DatasetType;
+
+    ensure_builtin_dataset_ready(DatasetType::Mnist).expect("mnist dist");
+    let full = materialize_catalog_full(DatasetType::Mnist).expect("full mnist");
+    assert_eq!(full.batch_size(), 70000);
+    let sr = full
+        .split(Some(0.2), None, false, None, false, false)
+        .expect("split");
+    assert_eq!(sr.train.batch_size(), 56000);
+    assert_eq!(sr.test.batch_size(), 14000);
 }

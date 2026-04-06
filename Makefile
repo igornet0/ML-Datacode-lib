@@ -1,7 +1,7 @@
 # ML-Datacode-lib — сборка libml (cdylib) по каналам: CPU, Metal (macOS), CUDA (Linux/Windows).
 # Каждый канал использует свой --target-dir, чтобы release-артефакты не перезаписывали друг друга.
 
-.PHONY: help build-cpu build-metal build-cuda build-all clean clean-dist
+.PHONY: help install build-cpu build-metal build-cuda build-all clean clean-dist
 
 ROOT := $(CURDIR)
 DIST_DIR := $(ROOT)/dist
@@ -23,6 +23,7 @@ endif
 help:
 	@echo "ML (libml) — каналы сборки"
 	@echo ""
+	@echo "  make install       — установка submodules"
 	@echo "  make build-cpu     — CPU only (без Candle GPU): dist/ml-cpu/$(LIBML)"
 	@echo "  make build-metal   — Metal (только macOS):     dist/ml-metal/$(LIBML)"
 	@echo "  make build-cuda    — CUDA (Linux/Windows):     dist/ml-cuda/$(LIBML)"

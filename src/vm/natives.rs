@@ -20,10 +20,89 @@ thread_local! {
     static GLOBAL_ML_DEVICE: RefCell<Option<Device>> = RefCell::new(None);
 }
 
-/// Helper function to recursively extract data and infer shape from nested arrays
+/// Строка для встроенного `typeof()` в VM: экспорт `ml.opaque_type_name` вызывает эту функцию по ABI.
+/// Имена совпадают с вариантами [`MlValueKind`].
+pub fn native_ml_opaque_type_name(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    let tag = match &args[0] {
+        Value::PluginOpaque { tag, .. } => *tag,
+        Value::Tensor(_) => MlValueKind::Tensor as u8,
+        _ => return Value::String("plugin_opaque".to_string()),
+    };
+    let name: &'static str = match MlValueKind::try_from(tag) {
+        Ok(MlValueKind::Tensor) => "tensor",
+        Ok(MlValueKind::Graph) => "graph",
+        Ok(MlValueKind::LinearRegression) => "linear_regression",
+        Ok(MlValueKind::Sgd) => "sgd",
+        Ok(MlValueKind::Momentum) => "momentum",
+        Ok(MlValueKind::Nag) => "nag",
+        Ok(MlValueKind::Adagrad) => "adagrad",
+        Ok(MlValueKind::Rmsprop) => "rmsprop",
+        Ok(MlValueKind::Adam) => "adam",
+        Ok(MlValueKind::AdamW) => "adamw",
+        Ok(MlValueKind::Dataset) => "dataset",
+        Ok(MlValueKind::DatasetCatalog) => "dataset_catalog",
+        Ok(MlValueKind::NeuralNetwork) => "neural_network",
+        Ok(MlValueKind::Sequential) => "sequential",
+        Ok(MlValueKind::Layer) => "layer",
+        Ok(MlValueKind::BoundMethod) => "bound_method",
+        Err(()) => "plugin_opaque",
+    };
+    Value::String(name.to_string())
+}
+
+/// Короткая строка для вывода (`print`): `<tensor tag=0 id=4>` и т.д. Экспорт `ml.opaque_display`.
+pub fn native_ml_opaque_display(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    let (tag, id) = match &args[0] {
+        Value::PluginOpaque { tag, id } => (*tag, *id),
+        Value::Tensor(tid) => (MlValueKind::Tensor as u8, *tid),
+        _ => return Value::Null,
+    };
+    let name: &'static str = match MlValueKind::try_from(tag) {
+        Ok(MlValueKind::Tensor) => "tensor",
+        Ok(MlValueKind::Graph) => "graph",
+        Ok(MlValueKind::LinearRegression) => "linear_regression",
+        Ok(MlValueKind::Sgd) => "sgd",
+        Ok(MlValueKind::Momentum) => "momentum",
+        Ok(MlValueKind::Nag) => "nag",
+        Ok(MlValueKind::Adagrad) => "adagrad",
+        Ok(MlValueKind::Rmsprop) => "rmsprop",
+        Ok(MlValueKind::Adam) => "adam",
+        Ok(MlValueKind::AdamW) => "adamw",
+        Ok(MlValueKind::Dataset) => "dataset",
+        Ok(MlValueKind::DatasetCatalog) => "dataset_catalog",
+        Ok(MlValueKind::NeuralNetwork) => "neural_network",
+        Ok(MlValueKind::Sequential) => "sequential",
+        Ok(MlValueKind::Layer) => "layer",
+        Ok(MlValueKind::BoundMethod) => "bound_method",
+        Err(()) => "plugin_opaque",
+    };
+    Value::String(format!("<{} tag={} id={}>", name, tag, id))
+}
+
+/// Helper function to recursively extract data and infer shape from nested arrays.
+/// `Value::ByteBuffer` rows (e.g. CIFAR pixel rows after `chunk`) flatten to `f32` without per-byte
+/// `Value::Number`; the host VM keeps byte buffers as ABI `Bytes` when crossing the dylib boundary.
 /// Returns Ok((data, shape)) on success, or Err(error_message) on error
 fn extract_tensor_data_and_shape(value: &Value) -> Result<(Vec<f32>, Vec<usize>), String> {
+    // Single tensor handle (e.g. row from `one_hot(...)[0]`) — same layout as a dense numeric row
+    if let Some(t) = crate::runtime::tensor_data_clone(value) {
+        let cpu = t.to_cpu()?;
+        let shape = cpu.shape().to_vec();
+        let data = cpu.to_vec();
+        return Ok((data, shape));
+    }
     match value {
+        Value::ByteBuffer(bb) => {
+            let slice = &bb.bytes[bb.offset..bb.offset + bb.len];
+            let data: Vec<f32> = slice.iter().map(|&b| b as f32).collect();
+            Ok((data, vec![bb.len]))
+        }
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             if arr_ref.is_empty() {
@@ -53,59 +132,41 @@ fn extract_tensor_data_and_shape(value: &Value) -> Result<(Vec<f32>, Vec<usize>)
                 return Ok((data, vec![data_len]));
             }
             
-            // Nested array - recursively process each element
-            let mut all_shapes: Vec<Vec<usize>> = Vec::new();
-            let mut all_data: Vec<Vec<f32>> = Vec::new();
-            
+            // Nested array — one flat buffer; reserve after first row (same shapes required).
+            let mut flat_data: Vec<f32> = Vec::new();
+            let mut first_shape: Option<Vec<usize>> = None;
+
             for (idx, val) in arr_ref.iter().enumerate() {
                 match extract_tensor_data_and_shape(val) {
                     Ok((data, shape)) => {
-                        all_data.push(data);
-                        all_shapes.push(shape);
+                        if let Some(fs) = &first_shape {
+                            if shape != *fs {
+                                let expected_row_length = fs.iter().product::<usize>();
+                                let actual_row_length = shape.iter().product::<usize>();
+                                return Err(format!(
+                                    "ShapeError: expected row length {}, but got {} at row index {}",
+                                    expected_row_length, actual_row_length, idx
+                                ));
+                            }
+                        } else {
+                            first_shape = Some(shape);
+                            flat_data.reserve(arr_ref.len().saturating_mul(data.len()));
+                        }
+                        flat_data.extend(data);
                     }
                     Err(msg) => {
                         return Err(format!("Error at row index {}: {}", idx, msg));
                     }
                 }
             }
-            
-            if all_shapes.is_empty() {
+
+            let Some(fs) = first_shape else {
                 return Err("Empty nested array cannot be converted to tensor".to_string());
-            }
-            
-            // Verify all sub-arrays have the same shape (check for ragged arrays)
-            let first_shape = &all_shapes[0];
-            let expected_row_length = if !first_shape.is_empty() {
-                first_shape[0]
-            } else {
-                0
             };
-            
-            for (idx, shape) in all_shapes.iter().enumerate().skip(1) {
-                if shape != first_shape {
-                    // More detailed error for ragged arrays
-                    let actual_row_length = if !shape.is_empty() {
-                        shape[0]
-                    } else {
-                        0
-                    };
-                    return Err(format!(
-                        "ShapeError: expected row length {}, but got {} at row index {}",
-                        expected_row_length, actual_row_length, idx
-                    ));
-                }
-            }
-            
-            // Flatten all data into single vector
-            let mut flat_data = Vec::new();
-            for data in all_data {
-                flat_data.extend(data);
-            }
-            
-            // Construct shape: [len(arr_ref), ...first_shape]
+
             let mut tensor_shape = vec![arr_ref.len()];
-            tensor_shape.extend(first_shape);
-            
+            tensor_shape.extend(fs);
+
             Ok((flat_data, tensor_shape))
         }
         Value::Number(n) => {
@@ -212,6 +273,40 @@ pub fn native_shape(args: &[Value]) -> Value {
     Value::Array(Rc::new(RefCell::new(shape_values)))
 }
 
+/// Global maximum of all tensor elements (for `max(tensor)` via VM `native_plugin_call`).
+pub fn native_tensor_max(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    let Some(t) = crate::runtime::as_tensor_ref(&args[0]) else {
+        return Value::Null;
+    };
+    let guard = t.borrow();
+    let data = guard.as_slice();
+    if data.is_empty() {
+        return Value::Null;
+    }
+    let m = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    Value::Number(f32_to_display_f64(m))
+}
+
+/// Global minimum of all tensor elements (for `min(tensor)` via VM `native_plugin_call`).
+pub fn native_tensor_min(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    let Some(t) = crate::runtime::as_tensor_ref(&args[0]) else {
+        return Value::Null;
+    };
+    let guard = t.borrow();
+    let data = guard.as_slice();
+    if data.is_empty() {
+        return Value::Null;
+    }
+    let m = data.iter().copied().fold(f32::INFINITY, f32::min);
+    Value::Number(f32_to_display_f64(m))
+}
+
 /// Get tensor data as array
 /// data(tensor)
 pub fn native_data(args: &[Value]) -> Value {
@@ -223,9 +318,111 @@ pub fn native_data(args: &[Value]) -> Value {
         return Value::Null;
     };
 
-    let data = tensor.borrow().data.clone();
+    let data = tensor.borrow().to_vec();
     let data_values: Vec<Value> = data.iter().map(|&d| Value::Number(d as f64)).collect();
     Value::Array(Rc::new(RefCell::new(data_values)))
+}
+
+/// Округление f32→f64 для печати: убирает шум IEEE754 (например 0.89999998 вместо 0.9).
+fn f32_to_display_f64(x: f32) -> f64 {
+    let d = f64::from(x);
+    (d * 1_000_000.0).round() / 1_000_000.0
+}
+
+fn format_f32_repr(x: f32) -> String {
+    if x.is_nan() {
+        return "nan".to_string();
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        };
+    }
+    // Достаточно ~7 значащих цифр для f32; {:.6} убирает артефакты вроде 0.89999998
+    let s = format!("{:.6}", x);
+    s.trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
+fn format_nested_inner(shape: &[usize], data: &[f32], pos: &mut usize) -> Result<String, ()> {
+    match shape.len() {
+        0 => {
+            if *pos >= data.len() {
+                return Err(());
+            }
+            let s = format_f32_repr(data[*pos]);
+            *pos += 1;
+            Ok(s)
+        }
+        1 => {
+            let k = shape[0];
+            let mut parts = Vec::with_capacity(k);
+            for _ in 0..k {
+                if *pos >= data.len() {
+                    return Err(());
+                }
+                parts.push(format_f32_repr(data[*pos]));
+                *pos += 1;
+            }
+            Ok(format!("[{}]", parts.join(", ")))
+        }
+        _ => {
+            let k = shape[0];
+            let mut rows = Vec::with_capacity(k);
+            for _ in 0..k {
+                rows.push(format_nested_inner(&shape[1..], data, pos)?);
+            }
+            Ok(format!(
+                "[\n{}\n]",
+                rows
+                    .iter()
+                    .map(|r| format!("  {}", r))
+                    .collect::<Vec<_>>()
+                    .join(",\n")
+            ))
+        }
+    }
+}
+
+/// Строковое представление тензора по `shape` (row-major). Экспорт через `native_plugin_call(_, "repr")`.
+pub fn native_tensor_repr(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    let Some(t) = crate::runtime::as_tensor_ref(&args[0]) else {
+        return Value::Null;
+    };
+    let tb = t.borrow();
+    let shape = &tb.shape;
+    let data = tb.as_slice();
+    if data.is_empty() {
+        return Value::String("[]".to_string());
+    }
+    let expected: usize = shape.iter().product();
+    if !shape.is_empty() && expected != data.len() {
+        return Value::Null;
+    }
+    const MAX_ELEMS: usize = 4096;
+    if data.len() > MAX_ELEMS {
+        let parts: Vec<String> = data[..MAX_ELEMS]
+            .iter()
+            .map(|x| format_f32_repr(*x))
+            .collect();
+        return Value::String(format!(
+            "[{}] ... (truncated, {} of {} elements)",
+            parts.join(", "),
+            MAX_ELEMS,
+            data.len()
+        ));
+    }
+    let mut pos = 0usize;
+    match format_nested_inner(shape, data, &mut pos) {
+        Ok(s) => Value::String(s),
+        Err(()) => Value::Null,
+    }
 }
 
 /// Element-wise addition
@@ -320,6 +517,96 @@ pub fn native_matmul(args: &[Value]) -> Value {
     }
 }
 
+/// Operator registration for the host parser: one row per symbol — `@` → `matmul` at factor precedence (60), left-assoc.
+pub fn native_operator_descriptor(_args: &[Value]) -> Value {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    Value::Array(Rc::new(RefCell::new(vec![Value::Array(Rc::new(RefCell::new(vec![
+        Value::String("@".to_string()),
+        Value::String("matmul".to_string()),
+        Value::Number(60.0),
+        Value::Number(0.0),
+    ])))])))
+}
+
+/// Host compiler parse-time kwargs: rows `[export_key, param1, ...]` and `["__method__", method, export_key]`
+/// for ambiguous builtin vs plugin methods (see [`crate::dataset_split_abi::DATASET_SPLIT_NAMED_ARG_NAMES`]).
+pub fn native_call_descriptor(_args: &[Value]) -> Value {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut row_split = Vec::with_capacity(1 + crate::dataset_split_abi::DATASET_SPLIT_NAMED_ARG_NAMES.len());
+    row_split.push(Value::String("native_dataset_split".to_string()));
+    row_split.extend(
+        crate::dataset_split_abi::DATASET_SPLIT_NAMED_ARG_NAMES
+            .iter()
+            .map(|s| Value::String((*s).to_string())),
+    );
+    let mut row_push = Vec::with_capacity(1 + crate::dataset_push_data_abi::DATASET_PUSH_DATA_NAMED_ARG_NAMES.len());
+    row_push.push(Value::String("native_dataset_push_data".to_string()));
+    row_push.extend(
+        crate::dataset_push_data_abi::DATASET_PUSH_DATA_NAMED_ARG_NAMES
+            .iter()
+            .map(|s| Value::String((*s).to_string())),
+    );
+    let row_concat = vec![
+        Value::String("native_dataset_concat".to_string()),
+        Value::String("other".to_string()),
+    ];
+    let method_split = vec![
+        Value::String("__method__".to_string()),
+        Value::String("split".to_string()),
+        Value::String("native_dataset_split".to_string()),
+    ];
+    let method_split_fold = vec![
+        Value::String("__method__".to_string()),
+        Value::String("split".to_string()),
+        Value::String("native_dataset_split_fold".to_string()),
+    ];
+    let method_push = vec![
+        Value::String("__method__".to_string()),
+        Value::String("push_data".to_string()),
+        Value::String("native_dataset_push_data".to_string()),
+    ];
+    let method_concat = vec![
+        Value::String("__method__".to_string()),
+        Value::String("concat".to_string()),
+        Value::String("native_dataset_concat".to_string()),
+    ];
+    let row_split_fold = vec![
+        Value::String("native_dataset_split_fold".to_string()),
+        Value::String("split".to_string()),
+    ];
+    Value::Array(Rc::new(RefCell::new(vec![
+        Value::Array(Rc::new(RefCell::new(row_split))),
+        Value::Array(Rc::new(RefCell::new(row_split_fold))),
+        Value::Array(Rc::new(RefCell::new(row_push))),
+        Value::Array(Rc::new(RefCell::new(row_concat))),
+        Value::Array(Rc::new(RefCell::new(method_split))),
+        Value::Array(Rc::new(RefCell::new(method_split_fold))),
+        Value::Array(Rc::new(RefCell::new(method_push))),
+        Value::Array(Rc::new(RefCell::new(method_concat))),
+    ])))
+}
+
+/// Binary ops on plugin opaque values from the VM (`a + b`, `@`, …): `(left, right, op)`.
+/// `op` is `"add"` | `"sub"` | `"mul"` | `"matmul"`. Type checks stay in the existing natives.
+pub fn native_opaque_binop(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Null;
+    }
+    let Value::String(ref op) = args[2] else {
+        return Value::Null;
+    };
+    let pair = &[args[0].clone(), args[1].clone()];
+    match op.as_str() {
+        "add" => native_add(pair),
+        "sub" => native_sub(pair),
+        "mul" => native_mul(pair),
+        "matmul" => native_matmul(pair),
+        _ => Value::Null,
+    }
+}
+
 /// Transpose tensor
 /// transpose(tensor)
 pub fn native_transpose(args: &[Value]) -> Value {
@@ -338,8 +625,8 @@ pub fn native_transpose(args: &[Value]) -> Value {
     }
 }
 
-/// Sum all elements
-/// sum(tensor)
+/// Сумма по последней оси с keepdim (2D: сумма по строкам → форма [rows, 1]).
+/// Встроенные `sum`/`average` в VM вызывают это через `native_plugin_call(_, "sum"|"mean")`.
 pub fn native_sum(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Null;
@@ -350,11 +637,14 @@ pub fn native_sum(args: &[Value]) -> Value {
     };
 
     let t = tensor.borrow().clone();
-    Value::Number(t.sum() as f64)
+    if t.shape().is_empty() {
+        return Value::Null;
+    }
+    let out = crate::ops::sum_last_axis_keepdim(&t);
+    crate::runtime::tensor_to_value(out)
 }
 
-/// Mean of all elements
-/// mean(tensor)
+/// Среднее по последней оси с keepdim (2D: по строкам → [rows, 1]).
 pub fn native_mean(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Null;
@@ -365,7 +655,11 @@ pub fn native_mean(args: &[Value]) -> Value {
     };
 
     let t = tensor.borrow().clone();
-    Value::Number(t.mean() as f64)
+    if t.shape().is_empty() {
+        return Value::Null;
+    }
+    let out = crate::ops::mean_last_axis_keepdim(&t);
+    crate::runtime::tensor_to_value(out)
 }
 
 /// Find index(es) of maximum element(s)
@@ -1365,13 +1659,15 @@ pub fn native_smooth_l1_loss(args: &[Value]) -> Value {
     }
 }
 
-/// Create a dataset from a table
-/// dataset(table, feature_columns, target_columns) -> dataset
+/// Create a dataset from a table (`ml.dataset.from_table` / `dataset.from_table`).
 /// `table` is `AbiValue::Table` bridged to `Value::Array([headers, rows])`.
 pub fn native_dataset(args: &[Value]) -> Value {
     if args.len() != 3 {
         use crate::native_error::set_native_error;
-        set_native_error(format!("ml.dataset expects 3 arguments (table, feature_cols, target_cols), got {}", args.len()));
+        set_native_error(format!(
+            "ml.dataset.from_table expects 3 arguments (table, feature_cols, target_cols), got {}",
+            args.len()
+        ));
         return Value::Null;
     }
 
@@ -1398,7 +1694,7 @@ pub fn native_dataset(args: &[Value]) -> Value {
         }
         _ => {
             use crate::native_error::set_native_error;
-            set_native_error("ml.dataset: second argument (feature_cols) must be an array of strings".to_string());
+            set_native_error("ml.dataset.from_table: second argument (feature_cols) must be an array of strings".to_string());
             return Value::Null;
         }
     };
@@ -1412,7 +1708,7 @@ pub fn native_dataset(args: &[Value]) -> Value {
                     Value::String(s) => columns.push(s.clone()),
                     _ => {
                         use crate::native_error::set_native_error;
-                        set_native_error("ml.dataset: target_cols must be an array of strings".to_string());
+                        set_native_error("ml.dataset.from_table: target_cols must be an array of strings".to_string());
                         return Value::Null;
                     }
                 }
@@ -1421,7 +1717,7 @@ pub fn native_dataset(args: &[Value]) -> Value {
         }
         _ => {
             use crate::native_error::set_native_error;
-            set_native_error("ml.dataset: third argument (target_cols) must be an array of strings".to_string());
+            set_native_error("ml.dataset.from_table: third argument (target_cols) must be an array of strings".to_string());
             return Value::Null;
         }
     };
@@ -1430,7 +1726,7 @@ pub fn native_dataset(args: &[Value]) -> Value {
         Ok(dataset) => crate::runtime::dataset_to_value(dataset),
         Err(e) => {
             use crate::native_error::set_native_error;
-            set_native_error(format!("ml.dataset failed: {}", e));
+            set_native_error(format!("ml.dataset.from_table failed: {}", e));
             Value::Null
         }
     }
@@ -1474,29 +1770,123 @@ pub fn native_dataset_targets(args: &[Value]) -> Value {
     crate::runtime::tensor_to_value(targets)
 }
 
-/// dataset_from_tensors(features_tensor, targets_tensor) -> dataset
-/// Use this when `import ml` is a dylib: `Table` cannot be passed through the ABI.
+/// `dataset.from_tensors` / `dataset_from_tensors`: (features_tensor, targets_tensor) -> dataset.
 pub fn native_dataset_from_tensors(args: &[Value]) -> Value {
     use crate::native_error::set_native_error;
     if args.len() != 2 {
         set_native_error(format!(
-            "ml.dataset_from_tensors expects 2 arguments (features, targets), got {}",
+            "ml.dataset.from_tensors expects 2 arguments (features, targets), got {}",
             args.len()
         ));
         return Value::Null;
     }
 
-    let Some(ft) = crate::runtime::tensor_data_clone(&args[0]) else {
-        set_native_error("ml.dataset_from_tensors: features must be a Tensor".to_string());
+    let Some(ft) = crate::runtime::tensor_from_value_flexible(&args[0]) else {
+        let extra = crate::runtime::features_array_mixed_rows_hint(&args[0])
+            .unwrap_or("Expected a Tensor handle or a rectangular nested array of numbers (e.g. [N][3072] for N rows of pixels).");
+        set_native_error(format!(
+            "ml.dataset.from_tensors: features must be a Tensor or nested array of numbers. {}",
+            extra
+        ));
         return Value::Null;
     };
-    let Some(tt) = crate::runtime::tensor_data_clone(&args[1]) else {
-        set_native_error("ml.dataset_from_tensors: targets must be a Tensor".to_string());
+    let Some(tt) = crate::runtime::tensor_from_value_flexible(&args[1]) else {
+        set_native_error(
+            "ml.dataset.from_tensors: targets must be a Tensor or nested array of numbers".to_string(),
+        );
         return Value::Null;
     };
 
     match Dataset::from_tensors(ft, tt) {
         Ok(d) => crate::runtime::dataset_to_value(d),
+        Err(e) => {
+            set_native_error(e);
+            Value::Null
+        }
+    }
+}
+
+/// `dataset.concat(other)` — append rows from `other` into this dataset in place.
+/// Args: `[receiver, other_dataset]`.
+pub fn native_dataset_concat(args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+    if args.len() != 2 {
+        set_native_error(format!(
+            "dataset.concat expects 2 arguments (dataset, other), got {}",
+            args.len()
+        ));
+        return Value::Null;
+    }
+    let receiver = match &args[0] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 => {
+            crate::runtime::get_dataset(*id).expect("dataset")
+        }
+        _ => {
+            set_native_error("dataset.concat: receiver must be a Dataset".to_string());
+            return Value::Null;
+        }
+    };
+    let other_ref = match &args[1] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 => {
+            crate::runtime::get_dataset(*id).expect("dataset")
+        }
+        _ => {
+            set_native_error("dataset.concat: second argument must be a Dataset".to_string());
+            return Value::Null;
+        }
+    };
+    let other_ds: Dataset = other_ref.borrow().clone();
+    let res = {
+        let mut r = receiver.borrow_mut();
+        r.concat_in_place(&other_ds)
+    };
+    match res {
+        Ok(()) => Value::Null,
+        Err(e) => {
+            set_native_error(e);
+            Value::Null
+        }
+    }
+}
+
+/// `dataset.push_data(features=..., targets=...)` — append rows to this dataset in place.
+/// Args: `[receiver, features, targets]`.
+pub fn native_dataset_push_data(args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+    if args.len() != 3 {
+        set_native_error(format!(
+            "dataset.push_data expects 3 arguments (dataset, features, targets), got {}",
+            args.len()
+        ));
+        return Value::Null;
+    }
+    let receiver = match &args[0] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 => {
+            crate::runtime::get_dataset(*id).expect("dataset")
+        }
+        _ => {
+            set_native_error("dataset.push_data: receiver must be a Dataset".to_string());
+            return Value::Null;
+        }
+    };
+    let Some(ft) = crate::runtime::tensor_from_value_flexible(&args[1]) else {
+        set_native_error(
+            "dataset.push_data: features must be a Tensor or nested array of numbers".to_string(),
+        );
+        return Value::Null;
+    };
+    let Some(tt) = crate::runtime::tensor_from_value_flexible(&args[2]) else {
+        set_native_error(
+            "dataset.push_data: targets must be a Tensor or nested array of numbers".to_string(),
+        );
+        return Value::Null;
+    };
+    let res = {
+        let mut r = receiver.borrow_mut();
+        r.push_tensor_rows(ft, tt)
+    };
+    match res {
+        Ok(()) => Value::Null,
         Err(e) => {
             set_native_error(e);
             Value::Null
@@ -1522,6 +1912,19 @@ pub fn native_dataset_len(args: &[Value]) -> Value {
     };
     let n = dataset.borrow().batch_size();
     Value::Number(n as f64)
+}
+
+/// ABI: whether `value` is a Dataset opaque that the VM can iterate (`for ... in`) using
+/// `dataset_len` + indexed access via `native_plugin_call` / `dataset_get`.
+pub fn native_dataset_supports_iteration(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Bool(false);
+    }
+    match &args[0] {
+        Value::PluginOpaque { tag, .. } if *tag == MlValueKind::Dataset as u8 => Value::Bool(true),
+        Value::PluginOpaque { tag, .. } if *tag == MlValueKind::DatasetCatalog as u8 => Value::Bool(false),
+        _ => Value::Bool(false),
+    }
 }
 
 /// dataset_get(dataset, index) -> [features_row, targets_row] (each rank-1 tensors)
@@ -1585,10 +1988,144 @@ pub fn native_dataset_get(args: &[Value]) -> Value {
     ])))
 }
 
-/// Convert integer labels to one-hot encoding
-/// onehot(labels, num_classes?) -> onehot_tensor
+/// Шесть опций sklearn-style: `test_size`, `train_size`, `shuffle`, `random_state`, `stratify`, `return_indices`.
+fn native_dataset_split_on_materialized(dataset: &Dataset, args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    if args.len() != 6 {
+        set_native_error(format!(
+            "dataset.split expects 6 option arguments, got {}",
+            args.len()
+        ));
+        return Value::Null;
+    }
+
+    let test_size = match &args[0] {
+        Value::Null => None,
+        Value::Number(n) => Some(*n),
+        _ => {
+            set_native_error("dataset.split: test_size must be null or number".to_string());
+            return Value::Null;
+        }
+    };
+    let train_size = match &args[1] {
+        Value::Null => None,
+        Value::Number(n) => Some(*n),
+        _ => {
+            set_native_error("dataset.split: train_size must be null or number".to_string());
+            return Value::Null;
+        }
+    };
+    let shuffle = match &args[2] {
+        Value::Null => crate::dataset_split_abi::DEFAULT_SPLIT_SHUFFLE,
+        Value::Bool(b) => *b,
+        _ => {
+            set_native_error("dataset.split: shuffle must be null or bool".to_string());
+            return Value::Null;
+        }
+    };
+    let random_state = match &args[3] {
+        Value::Null => None,
+        Value::Number(n) => {
+            if *n < 0.0 || n.fract() != 0.0 {
+                set_native_error(
+                    "dataset.split: random_state must be null or non-negative integer".to_string(),
+                );
+                return Value::Null;
+            }
+            Some(*n as u64)
+        }
+        _ => {
+            set_native_error("dataset.split: random_state must be null or number".to_string());
+            return Value::Null;
+        }
+    };
+    let stratify = match &args[4] {
+        Value::Null => crate::dataset_split_abi::DEFAULT_SPLIT_STRATIFY,
+        Value::Bool(b) => *b,
+        _ => {
+            set_native_error("dataset.split: stratify must be null or bool".to_string());
+            return Value::Null;
+        }
+    };
+    let return_indices = match &args[5] {
+        Value::Null => crate::dataset_split_abi::DEFAULT_SPLIT_RETURN_INDICES,
+        Value::Bool(b) => *b,
+        _ => {
+            set_native_error("dataset.split: return_indices must be null or bool".to_string());
+            return Value::Null;
+        }
+    };
+
+    let result = match dataset.split(
+        test_size,
+        train_size,
+        shuffle,
+        random_state,
+        stratify,
+        return_indices,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            set_native_error(e);
+            return Value::Null;
+        }
+    };
+
+    let train_v = crate::runtime::dataset_to_value(result.train);
+    let test_v = crate::runtime::dataset_to_value(result.test);
+    if return_indices {
+        let tr = result.train_indices.unwrap_or_default();
+        let te = result.test_indices.unwrap_or_default();
+        let tr_a: Vec<Value> = tr.iter().map(|&i| Value::Number(i as f64)).collect();
+        let te_a: Vec<Value> = te.iter().map(|&i| Value::Number(i as f64)).collect();
+        Value::Array(Rc::new(RefCell::new(vec![
+            train_v,
+            test_v,
+            Value::Array(Rc::new(RefCell::new(tr_a))),
+            Value::Array(Rc::new(RefCell::new(te_a))),
+        ])))
+    } else {
+        Value::Array(Rc::new(RefCell::new(vec![train_v, test_v])))
+    }
+}
+
+/// `dataset.split(test_size, train_size, shuffle, random_state, stratify, return_indices)` — VM passes
+/// receiver first, then six options (null/bool/number). Kwargs / compiler metadata: ML repo crate
+/// `crates/datacode_ml_compiler/ml_native_named_args.json` key `native_dataset_split` and
+/// [`crate::DATASET_SPLIT_NAMED_ARG_NAMES`]. Omitted bool kwargs arrive as `Null`; defaults are in
+/// [`crate::dataset_split_abi`].
+pub fn native_dataset_split(args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+
+    if args.len() != 7 {
+        set_native_error(format!(
+            "dataset.split expects 7 arguments (dataset + 6 options), got {}",
+            args.len()
+        ));
+        return Value::Null;
+    }
+
+    let dataset = match &args[0] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 => {
+            crate::runtime::get_dataset(*id).expect("dataset")
+        }
+        _ => {
+            set_native_error("dataset.split: first argument must be a Dataset".to_string());
+            return Value::Null;
+        }
+    };
+
+    let borrowed = dataset.borrow();
+    native_dataset_split_on_materialized(&*borrowed, &args[1..7])
+}
+
+/// Convert integer labels to one-hot encoding (batch)
+/// onehots(labels, num_classes?) -> tensor [N, num_classes]
 /// If num_classes is not provided, it is determined as max(label) + 1
-pub fn native_onehot(args: &[Value]) -> Value {
+pub fn native_onehots(args: &[Value]) -> Value {
     if args.is_empty() || args.len() > 2 {
         return Value::Null;
     }
@@ -1607,10 +2144,10 @@ pub fn native_onehot(args: &[Value]) -> Value {
     // Extract labels from tensor - support both [N] and [N, 1] shapes
     let labels: Vec<usize> = if labels_cpu.ndim() == 1 {
         // Shape [N]
-        labels_cpu.data.iter().map(|&x| x as usize).collect()
+        labels_cpu.as_slice().iter().map(|&x| x as usize).collect()
     } else if labels_cpu.ndim() == 2 && labels_cpu.shape[1] == 1 {
         // Shape [N, 1]
-        labels_cpu.data.iter().map(|&x| x as usize).collect()
+        labels_cpu.as_slice().iter().map(|&x| x as usize).collect()
     } else {
         return Value::Null;
     };
@@ -1659,10 +2196,50 @@ pub fn native_onehot(args: &[Value]) -> Value {
     }
 }
 
-/// Create a Linear layer
-/// linear_layer(in_features, out_features) -> layer_id
-pub fn native_linear_layer(args: &[Value]) -> Value {
+/// Single row one-hot: `one_hot(class_index, num_classes)` -> tensor [1, num_classes]
+pub fn native_one_hot(args: &[Value]) -> Value {
+    use crate::native_error::set_native_error;
+
     if args.len() != 2 {
+        set_native_error(format!(
+            "ml.one_hot expects 2 arguments (class_index, num_classes), got {}",
+            args.len()
+        ));
+        return Value::Null;
+    }
+    let (Value::Number(idx_n), Value::Number(nc_n)) = (&args[0], &args[1]) else {
+        set_native_error(
+            "ml.one_hot: class_index and num_classes must be numbers (e.g. pass a scalar label, not an array or tensor row)".to_string(),
+        );
+        return Value::Null;
+    };
+    let num_classes = *nc_n as i64;
+    let index = *idx_n as i64;
+    if num_classes <= 0 {
+        set_native_error("ml.one_hot: num_classes must be positive".to_string());
+        return Value::Null;
+    }
+    if index < 0 || index >= num_classes {
+        set_native_error(format!(
+            "ml.one_hot: class_index {} out of range for num_classes {}",
+            index, num_classes
+        ));
+        return Value::Null;
+    }
+    let nc = num_classes as usize;
+    let ix = index as usize;
+    let mut data = vec![0.0f32; nc];
+    data[ix] = 1.0;
+    match Tensor::new(data, vec![1, nc]) {
+        Ok(tensor) => crate::runtime::tensor_to_value(tensor),
+        Err(_) => Value::Null,
+    }
+}
+
+/// Create a Linear layer
+/// linear_layer(in_features, out_features) or linear_layer(in, out, use_bias: 0|1)
+pub fn native_linear_layer(args: &[Value]) -> Value {
+    if args.len() != 2 && args.len() != 3 {
         return Value::Null;
     }
 
@@ -1688,7 +2265,17 @@ pub fn native_linear_layer(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match crate::layer::Linear::new(in_features, out_features, true) {
+    let use_bias = if args.len() == 3 {
+        match &args[2] {
+            Value::Number(n) => *n != 0.0,
+            Value::Bool(b) => *b,
+            _ => return Value::Null,
+        }
+    } else {
+        true
+    };
+
+    match crate::layer::Linear::new(in_features, out_features, use_bias) {
         Ok(linear) => {
             let layer_id = crate::layer::add_layer_to_registry(Box::new(linear));
             crate::runtime::layer_value(layer_id)
@@ -1705,10 +2292,44 @@ pub fn native_relu_layer(_args: &[Value]) -> Value {
     crate::runtime::layer_value(layer_id)
 }
 
-/// Create a Softmax activation layer
-/// softmax_layer() -> layer_id
-pub fn native_softmax_layer(_args: &[Value]) -> Value {
-    let softmax = crate::layer::Softmax;
+/// Create a LeakyReLU layer: `leaky_relu_layer()` uses alpha=0.01; `leaky_relu_layer(alpha)` sets alpha.
+pub fn native_leaky_relu_layer(args: &[Value]) -> Value {
+    let alpha = match args.len() {
+        0 => 0.01f32,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let a = *n as f32;
+                if a <= 0.0 {
+                    return Value::Null;
+                }
+                a
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::LeakyReLU::new(alpha);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// Create a Softmax activation layer: softmax_layer() default axis=1; softmax_layer(axis) with 0 or 1
+pub fn native_softmax_layer(args: &[Value]) -> Value {
+    let axis = match args.len() {
+        0 => 1usize,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let a = *n as i64;
+                if a != 0 && a != 1 {
+                    return Value::Null;
+                }
+                a as usize
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let softmax = crate::layer::Softmax::with_axis(axis);
     let layer_id = crate::layer::add_layer_to_registry(Box::new(softmax));
     crate::runtime::layer_value(layer_id)
 }
@@ -1718,6 +2339,428 @@ pub fn native_softmax_layer(_args: &[Value]) -> Value {
 pub fn native_flatten_layer(_args: &[Value]) -> Value {
     let flatten = crate::layer::Flatten;
     let layer_id = crate::layer::add_layer_to_registry(Box::new(flatten));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// Create a Sigmoid activation layer
+/// sigmoid_layer() -> layer_id
+pub fn native_sigmoid_layer(_args: &[Value]) -> Value {
+    let sigmoid = crate::layer::Sigmoid::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(sigmoid));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// Create a Tanh activation layer
+/// tanh_layer() -> layer_id
+pub fn native_tanh_layer(_args: &[Value]) -> Value {
+    let tanh = crate::layer::Tanh::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(tanh));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_log_softmax_layer(args: &[Value]) -> Value {
+    let axis = match args.len() {
+        0 => 1usize,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let a = *n as i64;
+                if a != 0 && a != 1 {
+                    return Value::Null;
+                }
+                a as usize
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::LogSoftmax::with_axis(axis);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_gelu_layer(_args: &[Value]) -> Value {
+    let layer = crate::layer::Gelu::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_softplus_layer(_args: &[Value]) -> Value {
+    let layer = crate::layer::Softplus::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// elu_layer(alpha) — default alpha=1.0
+pub fn native_elu_layer(args: &[Value]) -> Value {
+    let alpha = match args.len() {
+        0 => 1.0f32,
+        1 => match &args[0] {
+            Value::Number(n) => *n as f32,
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::Elu::new(alpha);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_selu_layer(_args: &[Value]) -> Value {
+    let layer = crate::layer::Selu::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// prelu_layer(init_alpha) — default 0.25
+/// dropout_layer(p) — вероятность отключения (0..1)
+pub fn native_dropout_layer(args: &[Value]) -> Value {
+    let p = match args.len() {
+        0 => 0.5f32,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let v = *n as f32;
+                if v < 0.0 || v >= 1.0 {
+                    return Value::Null;
+                }
+                v
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::Dropout::new(p);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_dropout2d_layer(args: &[Value]) -> Value {
+    let p = match args.len() {
+        0 => 0.5f32,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let v = *n as f32;
+                if v < 0.0 || v >= 1.0 {
+                    return Value::Null;
+                }
+                v
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::Dropout2d::new(p);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_dropconnect_layer(args: &[Value]) -> Value {
+    let p = match args.len() {
+        0 => 0.5f32,
+        1 => match &args[0] {
+            Value::Number(n) => {
+                let v = *n as f32;
+                if v < 0.0 || v >= 1.0 {
+                    return Value::Null;
+                }
+                v
+            }
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::DropConnect::new(p);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// conv2d_layer(in_c, out_c, kh, kw) — stride=1, padding=0, bias=true
+/// max_pool2d_layer(kh, kw) — stride = kernel (неперекрывающийся)
+pub fn native_max_pool2d_layer(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let kh = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let kw = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let layer = crate::layer::MaxPool2d::new(kh, kw, kh, kw);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_conv2d_layer(args: &[Value]) -> Value {
+    if args.len() != 4 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let in_c = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let out_c = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let kh = match parse(2) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let kw = match parse(3) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    match crate::layer::Conv2d::new(in_c, out_c, (kh, kw), (1, 1), (0, 0), true) {
+        Ok(c) => {
+            let layer_id = crate::layer::add_layer_to_registry(Box::new(c));
+            crate::runtime::layer_value(layer_id)
+        }
+        Err(_) => Value::Null,
+    }
+}
+
+/// conv1d_layer(in_c, out_c, k) — stride 1, padding 0, bias on
+pub fn native_conv1d_layer(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let in_c = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let out_c = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let k = match parse(2) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    match crate::layer::Conv1d::new(in_c, out_c, k, 1, 0, true) {
+        Ok(c) => {
+            let layer_id = crate::layer::add_layer_to_registry(Box::new(c));
+            crate::runtime::layer_value(layer_id)
+        }
+        Err(_) => Value::Null,
+    }
+}
+
+pub fn native_max_pool1d_layer(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let k = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let stride = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let layer = crate::layer::MaxPool1d::new(k, stride);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_avg_pool1d_layer(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let k = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let stride = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let layer = crate::layer::AvgPool1d::new(k, stride);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+/// avg_pool2d_layer(kh, kw, sy, sx)
+pub fn native_avg_pool2d_layer(args: &[Value]) -> Value {
+    if args.len() != 4 {
+        return Value::Null;
+    }
+    let parse = |i: usize| -> Option<usize> {
+        match &args[i] {
+            Value::Number(n) => {
+                let v = *n as i64;
+                if v <= 0 {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            }
+            _ => None,
+        }
+    };
+    let kh = match parse(0) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let kw = match parse(1) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let sy = match parse(2) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let sx = match parse(3) {
+        Some(x) => x,
+        None => return Value::Null,
+    };
+    let layer = crate::layer::AvgPool2d::new(kh, kw, sy, sx);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_global_max_pool_layer(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::Null;
+    }
+    let layer = crate::layer::GlobalMaxPool2d::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+pub fn native_global_avg_pool_layer(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::Null;
+    }
+    let layer = crate::layer::GlobalAvgPool2d::new();
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+fn native_placeholder_layer_impl(name: &'static str) -> Value {
+    let layer = crate::layer::PlaceholderLayer::new(name);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
+    crate::runtime::layer_value(layer_id)
+}
+
+macro_rules! native_placeholder_layer_fn {
+    ($name:ident, $lit:literal) => {
+        pub fn $name(args: &[Value]) -> Value {
+            let _ = args;
+            native_placeholder_layer_impl($lit)
+        }
+    };
+}
+
+native_placeholder_layer_fn!(native_layer_conv3d_stub, "conv3d");
+native_placeholder_layer_fn!(native_layer_depthwise_conv2d_stub, "depthwise_conv2d");
+native_placeholder_layer_fn!(native_layer_separable_conv2d_stub, "separable_conv2d");
+native_placeholder_layer_fn!(native_layer_transposed_conv2d_stub, "transposed_conv2d");
+native_placeholder_layer_fn!(native_layer_batch_norm1d_stub, "batch_norm1d");
+native_placeholder_layer_fn!(native_layer_batch_norm2d_stub, "batch_norm2d");
+native_placeholder_layer_fn!(native_layer_layer_norm_stub, "layer_norm");
+native_placeholder_layer_fn!(native_layer_instance_norm_stub, "instance_norm");
+native_placeholder_layer_fn!(native_layer_group_norm_stub, "group_norm");
+native_placeholder_layer_fn!(native_layer_rnn_stub, "rnn");
+native_placeholder_layer_fn!(native_layer_lstm_stub, "lstm");
+native_placeholder_layer_fn!(native_layer_gru_stub, "gru");
+native_placeholder_layer_fn!(native_layer_attention_stub, "attention");
+native_placeholder_layer_fn!(native_layer_self_attention_stub, "self_attention");
+native_placeholder_layer_fn!(native_layer_multihead_attention_stub, "multihead_attention");
+native_placeholder_layer_fn!(native_layer_embedding_stub, "embedding");
+native_placeholder_layer_fn!(native_layer_positional_encoding_stub, "positional_encoding");
+native_placeholder_layer_fn!(native_layer_reshape_stub, "reshape");
+native_placeholder_layer_fn!(native_layer_permute_stub, "permute");
+native_placeholder_layer_fn!(native_layer_concatenate_stub, "concatenate");
+native_placeholder_layer_fn!(native_layer_stack_stub, "stack");
+native_placeholder_layer_fn!(native_layer_add_stub, "add");
+native_placeholder_layer_fn!(native_layer_residual_stub, "residual");
+native_placeholder_layer_fn!(native_layer_skip_connection_stub, "skip_connection");
+native_placeholder_layer_fn!(native_layer_upsample_stub, "upsample");
+native_placeholder_layer_fn!(native_layer_upsample_nearest_stub, "upsample_nearest");
+native_placeholder_layer_fn!(native_layer_upsample_bilinear_stub, "upsample_bilinear");
+native_placeholder_layer_fn!(native_layer_graph_conv_stub, "graph_conv");
+native_placeholder_layer_fn!(native_layer_graph_attention_stub, "graph_attention");
+native_placeholder_layer_fn!(native_layer_transformer_block_stub, "transformer_block");
+native_placeholder_layer_fn!(native_layer_feed_forward_stub, "feed_forward");
+
+pub fn native_prelu_layer(args: &[Value]) -> Value {
+    let init = match args.len() {
+        0 => 0.25f32,
+        1 => match &args[0] {
+            Value::Number(n) => *n as f32,
+            _ => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    let layer = crate::layer::PReLU::new(init);
+    let layer_id = crate::layer::add_layer_to_registry(Box::new(layer));
     crate::runtime::layer_value(layer_id)
 }
 
@@ -1752,24 +2795,340 @@ pub fn native_layer_call(args: &[Value]) -> Value {
     }
 }
 
+/// Invoke a bound method thunk: VM passes `[callee, receiver, ...method_args]`.
+fn dispatch_nn_bound_invoke(args: &[Value]) -> Value {
+    use crate::bound_method::{lookup_bound, lookup_nn_bound, BoundMethodPayload, NnBoundMethodKind};
+
+    let bound_id = match &args[0] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::BoundMethod as u8 => *id,
+        _ => return Value::Null,
+    };
+
+    if let Some(BoundMethodPayload::DatasetConcat { dataset_id }) = lookup_bound(bound_id) {
+        if args.len() != 3 {
+            return Value::Null;
+        }
+        match &args[1] {
+            Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 && *id == dataset_id => {
+                return native_dataset_concat(&args[1..]);
+            }
+            _ => return Value::Null,
+        }
+    }
+
+    if let Some(BoundMethodPayload::DatasetPushData { dataset_id }) = lookup_bound(bound_id) {
+        if args.len() != 4 {
+            return Value::Null;
+        }
+        match &args[1] {
+            Value::PluginOpaque { tag, id } if *tag == MlValueKind::Dataset as u8 && *id == dataset_id => {
+                return native_dataset_push_data(&args[1..]);
+            }
+            _ => return Value::Null,
+        }
+    }
+
+    if let Some(BoundMethodPayload::DatasetSplit { dataset_id }) = lookup_bound(bound_id) {
+        use crate::native_error::set_native_error;
+        if args.len() == 3 {
+            match &args[1] {
+                Value::PluginOpaque { tag, id } if *id == dataset_id => {
+                    if *tag != MlValueKind::DatasetCatalog as u8 {
+                        set_native_error(
+                            "dataset.split(\"train\"|\"test\") is only for datasets from ml.load_dataset(...)"
+                                .to_string(),
+                        );
+                        return Value::Null;
+                    }
+                    let kind = match crate::runtime::get_dataset_catalog_kind(*id) {
+                        Some(k) => k,
+                        None => return Value::Null,
+                    };
+                    let split = match &args[2] {
+                        Value::String(s) => s.as_str(),
+                        _ => {
+                            set_native_error(
+                                "dataset.split: use \"train\" or \"test\" as the first argument"
+                                    .to_string(),
+                            );
+                            return Value::Null;
+                        }
+                    };
+                    if split != "train" && split != "test" {
+                        set_native_error(
+                            "dataset.split: first argument must be \"train\" or \"test\"".to_string(),
+                        );
+                        return Value::Null;
+                    }
+                    match crate::builtin_datasets::materialize_catalog_split(kind, split) {
+                        Ok(ds) => return crate::runtime::dataset_to_value(ds),
+                        Err(e) => {
+                            set_native_error(e);
+                            return Value::Null;
+                        }
+                    }
+                }
+                _ => return Value::Null,
+            }
+        }
+        if args.len() != 8 {
+            return Value::Null;
+        }
+        match &args[1] {
+            Value::PluginOpaque { tag, id } if *id == dataset_id => {
+                if *tag == MlValueKind::DatasetCatalog as u8 {
+                    let kind = match crate::runtime::get_dataset_catalog_kind(*id) {
+                        Some(k) => k,
+                        None => return Value::Null,
+                    };
+                    let full = match crate::builtin_datasets::materialize_catalog_full(kind) {
+                        Ok(ds) => ds,
+                        Err(e) => {
+                            set_native_error(e);
+                            return Value::Null;
+                        }
+                    };
+                    return native_dataset_split_on_materialized(&full, &args[2..8]);
+                }
+                if *tag == MlValueKind::Dataset as u8 {
+                    return native_dataset_split(&args[1..]);
+                }
+            }
+            _ => {}
+        }
+        return Value::Null;
+    }
+
+    let Some((stored_nn_id, kind)) = lookup_nn_bound(bound_id) else {
+        return Value::Null;
+    };
+    let recv = match &args[1] {
+        Value::PluginOpaque { tag, id } if *tag == MlValueKind::NeuralNetwork as u8 => {
+            if *id != stored_nn_id {
+                return Value::Null;
+            }
+            args[1].clone()
+        }
+        _ => return Value::Null,
+    };
+
+    match kind {
+        NnBoundMethodKind::Device => {
+            if args.len() != 3 {
+                return Value::Null;
+            }
+            native_nn_set_device(&[recv, args[2].clone()])
+        }
+        NnBoundMethodKind::GetDevice => {
+            if args.len() != 2 {
+                return Value::Null;
+            }
+            native_nn_get_device(std::slice::from_ref(&recv))
+        }
+        NnBoundMethodKind::Save => {
+            if args.len() != 3 {
+                return Value::Null;
+            }
+            native_nn_save(&[recv, args[2].clone()])
+        }
+        NnBoundMethodKind::Train => {
+            // `native_nn_train` expects 7–10 args: nn + train args; VM adds bound + nn + … → 8–11 total.
+            if args.len() < 8 || args.len() > 11 {
+                return Value::Null;
+            }
+            native_nn_train(&args[1..])
+        }
+    }
+}
+
 /// Unified entry for callable plugin opaque values (VM dispatches here via `native_plugin_call`).
+///
+/// - **2 args** `[container, key_or_arg]`: `GetArrayElement`, layer call, forward, dataset fields, or
+///   `NeuralNetwork` + string → bound-method thunk.
+/// - **3+ args** `[callee, receiver, ...]`: method call after `GetArrayElement` returned a `BoundMethod`;
+///   also `native_layer_call`-style stays 2-arg only on the first branch.
 pub fn native_plugin_call(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return Value::Null;
+    }
+
+    // Method invoke: `[bound_method, receiver, ...]`
+    if let Value::PluginOpaque { tag, .. } = &args[0] {
+        if *tag == MlValueKind::BoundMethod as u8 {
+            return dispatch_nn_bound_invoke(args);
+        }
+    }
+
     if args.len() != 2 {
         return Value::Null;
     }
+
     let tag = match &args[0] {
         Value::PluginOpaque { tag, .. } => *tag,
+        Value::Tensor(_) => MlValueKind::Tensor as u8,
         _ => return Value::Null,
     };
+    // Tensor["shape"] / tensor.shape — GetArrayElement on PluginOpaque (tag Tensor) routes here.
+    if tag == MlValueKind::Tensor as u8 {
+        if let Value::String(s) = &args[1] {
+            if s == "shape" {
+                return native_shape(std::slice::from_ref(&args[0]));
+            }
+            if s == "data" || s == "to_array" {
+                return native_data(std::slice::from_ref(&args[0]));
+            }
+            if s == "max" {
+                return native_tensor_max(std::slice::from_ref(&args[0]));
+            }
+            if s == "min" {
+                return native_tensor_min(std::slice::from_ref(&args[0]));
+            }
+            if s == "max_idx" {
+                return native_max_idx(std::slice::from_ref(&args[0]));
+            }
+            if s == "min_idx" {
+                return native_min_idx(std::slice::from_ref(&args[0]));
+            }
+            if s == "repr" {
+                return native_tensor_repr(std::slice::from_ref(&args[0]));
+            }
+            if s == "T" || s == "transpose" {
+                return native_transpose(std::slice::from_ref(&args[0]));
+            }
+            // Встроенные `sum` / `average` в VM дергают `native_plugin_call(_, "sum"|"mean")` (см. data-code array.rs).
+            if s == "sum" {
+                return native_sum(std::slice::from_ref(&args[0]));
+            }
+            if s == "mean" || s == "average" {
+                return native_mean(std::slice::from_ref(&args[0]));
+            }
+        } else if let Value::Number(n) = &args[1] {
+            // `t[i]` — срез по оси 0 (строка для 2D, элемент для 1D)
+            let idx = *n as i64;
+            if idx < 0 {
+                return Value::Null;
+            }
+            let idx = idx as usize;
+            let Some(t) = crate::runtime::tensor_data_clone(&args[0]) else {
+                return Value::Null;
+            };
+            let cpu = match t.to_cpu() {
+                Ok(t) => t,
+                Err(_) => return Value::Null,
+            };
+            return match cpu.get_row(idx) {
+                Ok(row) => crate::runtime::tensor_to_value(row),
+                Err(_) => Value::Null,
+            };
+        }
+        return Value::Null;
+    }
     if tag == MlValueKind::Layer as u8 {
         native_layer_call(args)
-    } else if tag == MlValueKind::NeuralNetwork as u8
-        || tag == MlValueKind::LinearRegression as u8
-        || tag == MlValueKind::Sequential as u8
-    {
-        native_nn_forward(args)
+    } else if tag == MlValueKind::NeuralNetwork as u8 {
+        if crate::runtime::as_tensor_ref(&args[1]).is_some() {
+            native_nn_forward(args)
+        } else if let Value::String(name) = &args[1] {
+            if let Some(k) = crate::bound_method::nn_method_kind_for_name(name.as_str()) {
+                let nn_id = match &args[0] {
+                    Value::PluginOpaque { id, .. } => *id,
+                    _ => return Value::Null,
+                };
+                crate::bound_method::bound_method_value(nn_id, k)
+            } else {
+                Value::Null
+            }
+        } else {
+            use crate::native_error::set_native_error;
+            let got = match &args[1] {
+                Value::Null => "null",
+                Value::Number(_) => "number",
+                Value::Bool(_) => "bool",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::ByteBuffer(_) => "byte_buffer",
+                Value::Tensor(_) => "tensor(handle missing in runtime)",
+                Value::PluginOpaque { tag: t, .. } => {
+                    return {
+                        set_native_error(format!(
+                            "NeuralNetwork forward: second argument must be a Tensor, got PluginOpaque tag={} (tensor handle not in runtime?)",
+                            t
+                        ));
+                        Value::Null
+                    };
+                }
+                Value::Object(_) => "object",
+                Value::ObjectPtr(_) => "object_ptr",
+                Value::Path(_) => "path",
+            };
+            set_native_error(format!(
+                "NeuralNetwork forward: second argument must be a Tensor, got {}",
+                got
+            ));
+            Value::Null
+        }
+    } else if tag == MlValueKind::LinearRegression as u8 || tag == MlValueKind::Sequential as u8 {
+        // Forward only when the second value is a tensor: model(tensor).
+        if crate::runtime::as_tensor_ref(&args[1]).is_some() {
+            native_nn_forward(args)
+        } else {
+            Value::Null
+        }
     } else if tag == MlValueKind::Dataset as u8 {
+        if let Value::String(s) = &args[1] {
+            if s == "len" {
+                return native_dataset_len(std::slice::from_ref(&args[0]));
+            }
+            if s == "features" {
+                return native_dataset_features(std::slice::from_ref(&args[0]));
+            }
+            if s == "targets" {
+                return native_dataset_targets(std::slice::from_ref(&args[0]));
+            }
+            if s == "split" {
+                let ds_id = match &args[0] {
+                    Value::PluginOpaque { id, .. } => *id,
+                    _ => return Value::Null,
+                };
+                return crate::bound_method::bound_dataset_split_value(ds_id);
+            }
+            if s == "concat" {
+                let ds_id = match &args[0] {
+                    Value::PluginOpaque { id, .. } => *id,
+                    _ => return Value::Null,
+                };
+                return crate::bound_method::bound_dataset_concat_value(ds_id);
+            }
+            if s == "push_data" {
+                let ds_id = match &args[0] {
+                    Value::PluginOpaque { id, .. } => *id,
+                    _ => return Value::Null,
+                };
+                return crate::bound_method::bound_dataset_push_data_value(ds_id);
+            }
+        }
         native_dataset_get(args)
+    } else if tag == MlValueKind::DatasetCatalog as u8 {
+        use crate::native_error::set_native_error;
+        if let Value::String(s) = &args[1] {
+            if s == "split" {
+                let ds_id = match &args[0] {
+                    Value::PluginOpaque { id, .. } => *id,
+                    _ => return Value::Null,
+                };
+                return crate::bound_method::bound_dataset_split_value(ds_id);
+            }
+            if matches!(s.as_str(), "len" | "features" | "targets" | "concat" | "push_data") {
+                set_native_error(
+                    "load_dataset: call .split(...) first to materialize the dataset".to_string(),
+                );
+                return Value::Null;
+            }
+        }
+        set_native_error(
+            "load_dataset: call .split(...) first before using the dataset".to_string(),
+        );
+        Value::Null
     } else {
         Value::Null
     }
@@ -2382,6 +3741,42 @@ pub fn native_ml_load_model(args: &[Value]) -> Value {
     }
 }
 
+/// load_dataset("mnist" | "cifar-10" | "cifar-100") -> dataset catalog (materialize with `.split(...)`).
+pub fn native_load_dataset(args: &[Value]) -> Value {
+    use crate::datasets::parse_builtin_dataset_name;
+    use crate::native_error::set_native_error;
+
+    if args.len() != 1 {
+        set_native_error(
+            "ml.load_dataset expects one string: \"mnist\", \"cifar-10\", or \"cifar-100\"".to_string(),
+        );
+        return Value::Null;
+    }
+
+    let name = match &args[0] {
+        Value::String(s) => s.as_str(),
+        _ => {
+            set_native_error("ml.load_dataset: argument must be a string".to_string());
+            return Value::Null;
+        }
+    };
+
+    let Some(kind) = parse_builtin_dataset_name(name) else {
+        set_native_error(format!(
+            "ml.load_dataset: unknown dataset name {:?} (expected mnist, cifar-10, cifar-100)",
+            name
+        ));
+        return Value::Null;
+    };
+
+    if let Err(e) = crate::builtin_datasets::ensure_builtin_dataset_ready(kind) {
+        set_native_error(e);
+        return Value::Null;
+    }
+
+    crate::runtime::dataset_catalog_to_value(kind)
+}
+
 /// Load MNIST dataset
 /// load_mnist("train") or load_mnist("test") -> dataset
 pub fn native_load_mnist(args: &[Value]) -> Value {
@@ -2400,7 +3795,7 @@ pub fn native_load_mnist(args: &[Value]) -> Value {
         }
     };
 
-    let (images_path, labels_path) = match crate::mnist_locate::resolve_mnist_paths(split) {
+    let (images_path, labels_path) = match crate::datasets_manager::resolve_mnist_paths(split) {
         Ok(p) => p,
         Err(e) => {
             set_native_error(e);
@@ -2886,14 +4281,52 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                 let layer_type = format!("{:?}", layer);
                 let layer_type_clean = if layer_type.contains("Linear") {
                     "Linear"
+                } else if layer_type.contains("PlaceholderLayer") {
+                    "Placeholder"
+                } else if layer_type.contains("GlobalMaxPool2d") {
+                    "GlobalMaxPool2d"
+                } else if layer_type.contains("GlobalAvgPool2d") {
+                    "GlobalAvgPool2d"
+                } else if layer_type.contains("AvgPool2d") {
+                    "AvgPool2d"
+                } else if layer_type.contains("AvgPool1d") {
+                    "AvgPool1d"
+                } else if layer_type.contains("MaxPool1d") {
+                    "MaxPool1d"
+                } else if layer_type.contains("MaxPool2d") {
+                    "MaxPool2d"
+                } else if layer_type.contains("Conv1d") {
+                    "Conv1d"
+                } else if layer_type.contains("Conv2d") {
+                    "Conv2d"
+                } else if layer_type.contains("LeakyReLU") {
+                    "LeakyReLU"
+                } else if layer_type.contains("PReLU") {
+                    "PReLU"
                 } else if layer_type.contains("ReLU") {
                     "ReLU"
+                } else if layer_type.contains("LogSoftmax") {
+                    "LogSoftmax"
+                } else if layer_type.contains("Softmax") {
+                    "Softmax"
+                } else if layer_type.contains("Gelu") {
+                    "GELU"
+                } else if layer_type.contains("Softplus") {
+                    "Softplus"
+                } else if layer_type.contains("Selu") {
+                    "SELU"
+                } else if layer_type.contains("Elu") {
+                    "ELU"
+                } else if layer_type.contains("Dropout2d") {
+                    "Dropout2d"
+                } else if layer_type.contains("DropConnect") {
+                    "DropConnect"
+                } else if layer_type.contains("Dropout") {
+                    "Dropout"
                 } else if layer_type.contains("Sigmoid") {
                     "Sigmoid"
                 } else if layer_type.contains("Tanh") {
                     "Tanh"
-                } else if layer_type.contains("Softmax") {
-                    "Softmax"
                 } else if layer_type.contains("Flatten") {
                     "Flatten"
                 } else {
@@ -3101,15 +4534,15 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                             let weight_cpu = weight_tensor.to_cpu().unwrap_or_else(|_| weight_tensor);
                             let bias_cpu = bias_tensor.to_cpu().unwrap_or_else(|_| bias_tensor);
                             
-                            let weight_min = weight_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                            let weight_max = weight_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                            let weight_mean = weight_cpu.data.iter().sum::<f32>() / weight_cpu.data.len() as f32;
+                            let weight_min = weight_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                            let weight_max = weight_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                            let weight_mean = weight_cpu.as_slice().iter().sum::<f32>() / weight_cpu.as_slice().len() as f32;
                             
-                            let bias_min = bias_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                            let bias_max = bias_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                            let bias_mean = bias_cpu.data.iter().sum::<f32>() / bias_cpu.data.len() as f32;
+                            let bias_min = bias_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                            let bias_max = bias_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                            let bias_mean = bias_cpu.as_slice().iter().sum::<f32>() / bias_cpu.as_slice().len() as f32;
                             
-                            Some((layer_idx, weight_min, weight_max, weight_mean, weight_cpu.data.len(), bias_min, bias_max, bias_mean, bias_cpu.data.len()))
+                            Some((layer_idx, weight_min, weight_max, weight_mean, weight_cpu.as_slice().len(), bias_min, bias_max, bias_mean, bias_cpu.as_slice().len()))
                         } else {
                             None
                         }
@@ -3448,15 +4881,15 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
             if verbose {
                 // Calculate statistics for weights
                 let weights_cpu = weights.to_cpu().unwrap_or_else(|_| weights.clone());
-                let weight_min = weights_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                let weight_max = weights_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                let weight_mean = weights_cpu.data.iter().sum::<f32>() / weights_cpu.data.len() as f32;
+                let weight_min = weights_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                let weight_max = weights_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let weight_mean = weights_cpu.as_slice().iter().sum::<f32>() / weights_cpu.as_slice().len() as f32;
                 
                 // Calculate statistics for bias
                 let bias_cpu = bias.to_cpu().unwrap_or_else(|_| bias.clone());
-                let bias_min = bias_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                let bias_max = bias_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                let bias_mean = bias_cpu.data.iter().sum::<f32>() / bias_cpu.data.len() as f32;
+                let bias_min = bias_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                let bias_max = bias_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let bias_mean = bias_cpu.as_slice().iter().sum::<f32>() / bias_cpu.as_slice().len() as f32;
                 
                 json_obj["parameter_statistics"] = serde_json::json!({
                     "weights": {
@@ -3514,15 +4947,15 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                 
                 // Calculate statistics for weights
                 let weights_cpu = weights.to_cpu().unwrap_or_else(|_| weights.clone());
-                let weight_min = weights_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                let weight_max = weights_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                let weight_mean = weights_cpu.data.iter().sum::<f32>() / weights_cpu.data.len() as f32;
+                let weight_min = weights_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                let weight_max = weights_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let weight_mean = weights_cpu.as_slice().iter().sum::<f32>() / weights_cpu.as_slice().len() as f32;
                 
                 // Calculate statistics for bias
                 let bias_cpu = bias.to_cpu().unwrap_or_else(|_| bias.clone());
-                let bias_min = bias_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                let bias_max = bias_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                let bias_mean = bias_cpu.data.iter().sum::<f32>() / bias_cpu.data.len() as f32;
+                let bias_min = bias_cpu.as_slice().iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                let bias_max = bias_cpu.as_slice().iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let bias_mean = bias_cpu.as_slice().iter().sum::<f32>() / bias_cpu.as_slice().len() as f32;
                 
                 println!("Weights:");
                 println!("  Min:   {:.6}", weight_min);

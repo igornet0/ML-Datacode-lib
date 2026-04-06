@@ -14,6 +14,8 @@ pub const TAG_DATASET: u8 = 10;
 pub const TAG_NEURAL_NETWORK: u8 = 11;
 pub const TAG_SEQUENTIAL: u8 = 12;
 pub const TAG_LAYER: u8 = 13;
+pub const TAG_BOUND_METHOD: u8 = 14;
+pub const TAG_DATASET_CATALOG: u8 = 15;
 
 pub fn plugin_opaque_builtin_type_name(tag: u8) -> &'static str {
     match tag {
@@ -31,6 +33,8 @@ pub fn plugin_opaque_builtin_type_name(tag: u8) -> &'static str {
         TAG_NEURAL_NETWORK => "neural_network",
         TAG_SEQUENTIAL => "sequential",
         TAG_LAYER => "layer",
+        TAG_BOUND_METHOD => "bound_method",
+        TAG_DATASET_CATALOG => "dataset_catalog",
         _ => "plugin_opaque",
     }
 }
@@ -51,6 +55,8 @@ pub fn plugin_opaque_schema_label(tag: u8) -> &'static str {
         TAG_NEURAL_NETWORK => "NeuralNetwork",
         TAG_SEQUENTIAL => "Sequential",
         TAG_LAYER => "Layer",
+        TAG_BOUND_METHOD => "BoundMethod",
+        TAG_DATASET_CATALOG => "DatasetCatalog",
         _ => "PluginOpaque",
     }
 }

@@ -1,8 +1,17 @@
 // Layer implementations for neural networks
 // Rewritten to match MetalNN architecture
 
+pub use crate::forward_mode::{forward_training, set_forward_training};
+
 use crate::tensor::Tensor;
-use crate::autograd::{Variable, requires_grad, matmul_with_grad, add_with_grad, relu_with_grad, transpose_with_grad};
+use crate::autograd::{
+    Variable, requires_grad, matmul_with_grad, add_with_grad, relu_with_grad,
+    leaky_relu_with_grad, transpose_with_grad, sigmoid_with_grad, tanh_with_grad, gelu_with_grad,
+    softplus_with_grad, elu_with_grad, selu_with_grad, softmax_with_grad, log_softmax_with_grad,
+    prelu_with_grad, dropout_with_grad, dropout2d_channel_with_grad, conv2d_with_grad,
+    conv1d_with_grad, max_pool2d_with_grad, max_pool1d_with_grad, avg_pool1d_with_grad,
+    avg_pool2d_with_grad, global_max_pool2d_with_grad, global_avg_pool2d_with_grad,
+};
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -330,6 +339,48 @@ impl Layer for ReLU {
     }
 }
 
+/// LeakyReLU: x if x > 0 else alpha * x (alpha обычно 0.01)
+#[derive(Debug, Clone)]
+pub struct LeakyReLU {
+    pub alpha: f32,
+}
+
+impl LeakyReLU {
+    pub fn new(alpha: f32) -> Self {
+        Self { alpha }
+    }
+
+    pub fn forward(&self, input: Rc<Variable>) -> Rc<Variable> {
+        leaky_relu_with_grad(input, self.alpha)
+    }
+
+    pub fn parameters(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+}
+
+impl Layer for LeakyReLU {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        self.forward(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
 /// Sigmoid активационный слой
 #[derive(Debug, Clone)]
 pub struct Sigmoid;
@@ -342,11 +393,7 @@ impl Sigmoid {
 
 impl Layer for Sigmoid {
     fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
-        use crate::ops;
-        use crate::autograd::Variable;
-        let input_data = input.data.borrow();
-        let result_data = ops::sigmoid(&input_data);
-        Variable::new(result_data, input.requires_grad)
+        sigmoid_with_grad(input)
     }
     
     fn parameters_var(&self) -> Vec<Rc<Variable>> {
@@ -378,11 +425,7 @@ impl Tanh {
 
 impl Layer for Tanh {
     fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
-        use crate::ops;
-        use crate::autograd::Variable;
-        let input_data = input.data.borrow();
-        let result_data = ops::tanh(&input_data);
-        Variable::new(result_data, input.requires_grad)
+        tanh_with_grad(input)
     }
     
     fn parameters_var(&self) -> Vec<Rc<Variable>> {
@@ -402,23 +445,25 @@ impl Layer for Tanh {
     }
 }
 
-/// Softmax активационный слой
+/// Softmax активационный слой (2D, axis 0 или 1)
 #[derive(Debug, Clone)]
-pub struct Softmax;
+pub struct Softmax {
+    pub axis: usize,
+}
 
 impl Softmax {
     pub fn new() -> Self {
-        Self
+        Self { axis: 1 }
+    }
+
+    pub fn with_axis(axis: usize) -> Self {
+        Self { axis }
     }
 }
 
 impl Layer for Softmax {
     fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
-        use crate::ops;
-        use crate::autograd::Variable;
-        let input_data = input.data.borrow();
-        let result_data = ops::softmax(&input_data, 1); // axis=1 for classes
-        Variable::new(result_data, input.requires_grad)
+        softmax_with_grad(input, self.axis)
     }
     
     fn parameters_var(&self) -> Vec<Rc<Variable>> {
@@ -487,6 +532,713 @@ impl Layer for Flatten {
     }
 }
 
+/// log_softmax(x, axis)
+#[derive(Debug, Clone)]
+pub struct LogSoftmax {
+    pub axis: usize,
+}
+
+impl LogSoftmax {
+    pub fn new() -> Self {
+        Self { axis: 1 }
+    }
+
+    pub fn with_axis(axis: usize) -> Self {
+        Self { axis }
+    }
+}
+
+impl Layer for LogSoftmax {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        log_softmax_with_grad(input, self.axis)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Gelu;
+
+impl Gelu {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Layer for Gelu {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        gelu_with_grad(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Softplus;
+
+impl Softplus {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Layer for Softplus {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        softplus_with_grad(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Elu {
+    pub alpha: f32,
+}
+
+impl Elu {
+    pub fn new(alpha: f32) -> Self {
+        Self { alpha }
+    }
+}
+
+impl Layer for Elu {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        elu_with_grad(input, self.alpha)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Selu;
+
+impl Selu {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Layer for Selu {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        selu_with_grad(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// PReLU с одним обучаемым скаляром alpha
+#[derive(Debug, Clone)]
+pub struct PReLU {
+    pub alpha: Rc<Variable>,
+}
+
+impl PReLU {
+    pub fn new(init: f32) -> Self {
+        let t = Tensor::from_slice(&[init], &[1]);
+        Self {
+            alpha: requires_grad(t),
+        }
+    }
+
+    pub fn forward(&self, input: Rc<Variable>) -> Rc<Variable> {
+        prelu_with_grad(input, self.alpha.clone())
+    }
+}
+
+impl Layer for PReLU {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        self.forward(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![self.alpha.clone()]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        true
+    }
+}
+
+/// Dropout (inverted) на произвольной форме
+#[derive(Debug, Clone)]
+pub struct Dropout {
+    pub p: f32,
+}
+
+impl Dropout {
+    pub fn new(p: f32) -> Self {
+        Self { p }
+    }
+}
+
+impl Layer for Dropout {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        dropout_with_grad(input, self.p)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// Dropout2d — маска по каналу для [N,C,H,W]
+#[derive(Debug, Clone)]
+pub struct Dropout2d {
+    pub p: f32,
+}
+
+impl Dropout2d {
+    pub fn new(p: f32) -> Self {
+        Self { p }
+    }
+}
+
+impl Layer for Dropout2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        dropout2d_channel_with_grad(input, self.p)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// DropConnect: как dropout по входу (аппроксимация)
+#[derive(Debug, Clone)]
+pub struct DropConnect {
+    pub p: f32,
+}
+
+impl DropConnect {
+    pub fn new(p: f32) -> Self {
+        Self { p }
+    }
+}
+
+impl Layer for DropConnect {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        dropout_with_grad(input, self.p)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// Conv2d: вход [N, C_in, H, W]
+#[derive(Debug, Clone)]
+pub struct Conv2d {
+    pub weight: Rc<Variable>,
+    pub bias: Option<Rc<Variable>>,
+    pub stride: (usize, usize),
+    pub padding: (usize, usize),
+}
+
+impl Conv2d {
+    pub fn new(
+        in_channels: usize,
+        out_channels: usize,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        use_bias: bool,
+    ) -> Result<Self, String> {
+        if in_channels == 0 || out_channels == 0 {
+            return Err("conv2d: channels must be > 0".to_string());
+        }
+        let (kh, kw) = kernel;
+        let fan_in = in_channels * kh * kw;
+        let kaiming_std = (2.0 / fan_in as f32).sqrt();
+        let bound = (3.0f32).sqrt() * kaiming_std;
+        let size = out_channels * in_channels * kh * kw;
+        let mut w = Vec::with_capacity(size);
+        for _ in 0..size {
+            w.push((rand::random() * 2.0 - 1.0) * bound);
+        }
+        let weight = requires_grad(Tensor::from_slice(&w, &[out_channels, in_channels, kh, kw]));
+        let bias = if use_bias {
+            Some(requires_grad(Tensor::from_slice(&vec![0.0f32; out_channels], &[out_channels])))
+        } else {
+            None
+        };
+        Ok(Self {
+            weight,
+            bias,
+            stride,
+            padding,
+        })
+    }
+
+    pub fn forward(&self, input: Rc<Variable>) -> Rc<Variable> {
+        conv2d_with_grad(
+            input,
+            self.weight.clone(),
+            self.bias.clone(),
+            self.stride,
+            self.padding,
+        )
+    }
+}
+
+impl Layer for Conv2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        self.forward(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        let mut p = vec![self.weight.clone()];
+        if let Some(ref b) = self.bias {
+            p.push(b.clone());
+        }
+        p
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MaxPool2d {
+    pub kh: usize,
+    pub kw: usize,
+    pub sy: usize,
+    pub sx: usize,
+}
+
+impl MaxPool2d {
+    pub fn new(kh: usize, kw: usize, sy: usize, sx: usize) -> Self {
+        Self { kh, kw, sy, sx }
+    }
+}
+
+impl Layer for MaxPool2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        max_pool2d_with_grad(input, self.kh, self.kw, self.sy, self.sx)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// Conv1d: вход [N, C_in, L]
+#[derive(Debug, Clone)]
+pub struct Conv1d {
+    pub weight: Rc<Variable>,
+    pub bias: Option<Rc<Variable>>,
+    pub stride: usize,
+    pub padding: usize,
+}
+
+impl Conv1d {
+    pub fn new(
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+        use_bias: bool,
+    ) -> Result<Self, String> {
+        if in_channels == 0 || out_channels == 0 || kernel == 0 {
+            return Err("conv1d: invalid dimensions".to_string());
+        }
+        let fan_in = in_channels * kernel;
+        let kaiming_std = (2.0 / fan_in as f32).sqrt();
+        let bound = (3.0f32).sqrt() * kaiming_std;
+        let size = out_channels * in_channels * kernel;
+        let mut w = Vec::with_capacity(size);
+        for _ in 0..size {
+            w.push((rand::random() * 2.0 - 1.0) * bound);
+        }
+        let weight = requires_grad(Tensor::from_slice(&w, &[out_channels, in_channels, kernel]));
+        let bias = if use_bias {
+            Some(requires_grad(Tensor::from_slice(
+                &vec![0.0f32; out_channels],
+                &[out_channels],
+            )))
+        } else {
+            None
+        };
+        Ok(Self {
+            weight,
+            bias,
+            stride,
+            padding,
+        })
+    }
+
+    pub fn forward(&self, input: Rc<Variable>) -> Rc<Variable> {
+        conv1d_with_grad(
+            input,
+            self.weight.clone(),
+            self.bias.clone(),
+            self.stride,
+            self.padding,
+        )
+    }
+}
+
+impl Layer for Conv1d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        self.forward(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        let mut p = vec![self.weight.clone()];
+        if let Some(ref b) = self.bias {
+            p.push(b.clone());
+        }
+        p
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MaxPool1d {
+    pub k: usize,
+    pub stride: usize,
+}
+
+impl MaxPool1d {
+    pub fn new(k: usize, stride: usize) -> Self {
+        Self { k, stride }
+    }
+}
+
+impl Layer for MaxPool1d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        max_pool1d_with_grad(input, self.k, self.stride)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AvgPool1d {
+    pub k: usize,
+    pub stride: usize,
+}
+
+impl AvgPool1d {
+    pub fn new(k: usize, stride: usize) -> Self {
+        Self { k, stride }
+    }
+}
+
+impl Layer for AvgPool1d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        avg_pool1d_with_grad(input, self.k, self.stride)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AvgPool2d {
+    pub kh: usize,
+    pub kw: usize,
+    pub sy: usize,
+    pub sx: usize,
+}
+
+impl AvgPool2d {
+    pub fn new(kh: usize, kw: usize, sy: usize, sx: usize) -> Self {
+        Self { kh, kw, sy, sx }
+    }
+}
+
+impl Layer for AvgPool2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        avg_pool2d_with_grad(input, self.kh, self.kw, self.sy, self.sx)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalMaxPool2d;
+
+impl GlobalMaxPool2d {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Layer for GlobalMaxPool2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        global_max_pool2d_with_grad(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalAvgPool2d;
+
+impl GlobalAvgPool2d {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Layer for GlobalAvgPool2d {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        global_avg_pool2d_with_grad(input)
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
+/// Заглушка для API из бэклога: forward = identity (вход без изменений). Не использовать в реальных сетях.
+#[derive(Debug, Clone)]
+pub struct PlaceholderLayer {
+    pub name: String,
+}
+
+impl PlaceholderLayer {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+impl Layer for PlaceholderLayer {
+    fn forward_var(&self, input: Rc<Variable>) -> Rc<Variable> {
+        input.clone()
+    }
+
+    fn parameters_var(&self) -> Vec<Rc<Variable>> {
+        vec![]
+    }
+
+    fn in_features(&self) -> usize {
+        0
+    }
+
+    fn out_features(&self) -> usize {
+        0
+    }
+
+    fn is_trainable(&self) -> bool {
+        false
+    }
+}
+
 /// Enum для различных типов слоёв
 #[derive(Debug, Clone)]
 pub enum LayerType {
@@ -496,6 +1248,24 @@ pub enum LayerType {
     Tanh(Tanh),
     Softmax(Softmax),
     Flatten(Flatten),
+    LogSoftmax(LogSoftmax),
+    Gelu(Gelu),
+    Softplus(Softplus),
+    Elu(Elu),
+    Selu(Selu),
+    PReLU(PReLU),
+    Dropout(Dropout),
+    Dropout2d(Dropout2d),
+    DropConnect(DropConnect),
+    Conv2d(Conv2d),
+    Conv1d(Conv1d),
+    MaxPool2d(MaxPool2d),
+    MaxPool1d(MaxPool1d),
+    AvgPool1d(AvgPool1d),
+    AvgPool2d(AvgPool2d),
+    GlobalMaxPool2d(GlobalMaxPool2d),
+    GlobalAvgPool2d(GlobalAvgPool2d),
+    Placeholder(PlaceholderLayer),
 }
 
 impl LayerType {
@@ -507,6 +1277,24 @@ impl LayerType {
             LayerType::Tanh(layer) => layer.forward_var(input),
             LayerType::Softmax(layer) => layer.forward_var(input),
             LayerType::Flatten(layer) => layer.forward_var(input),
+            LayerType::LogSoftmax(layer) => layer.forward_var(input),
+            LayerType::Gelu(layer) => layer.forward_var(input),
+            LayerType::Softplus(layer) => layer.forward_var(input),
+            LayerType::Elu(layer) => layer.forward_var(input),
+            LayerType::Selu(layer) => layer.forward_var(input),
+            LayerType::PReLU(layer) => layer.forward_var(input),
+            LayerType::Dropout(layer) => layer.forward_var(input),
+            LayerType::Dropout2d(layer) => layer.forward_var(input),
+            LayerType::DropConnect(layer) => layer.forward_var(input),
+            LayerType::Conv2d(layer) => layer.forward_var(input),
+            LayerType::Conv1d(layer) => layer.forward_var(input),
+            LayerType::MaxPool2d(layer) => layer.forward_var(input),
+            LayerType::MaxPool1d(layer) => layer.forward_var(input),
+            LayerType::AvgPool1d(layer) => layer.forward_var(input),
+            LayerType::AvgPool2d(layer) => layer.forward_var(input),
+            LayerType::GlobalMaxPool2d(layer) => layer.forward_var(input),
+            LayerType::GlobalAvgPool2d(layer) => layer.forward_var(input),
+            LayerType::Placeholder(layer) => layer.forward_var(input),
         }
     }
 
@@ -518,6 +1306,24 @@ impl LayerType {
             LayerType::Tanh(_) => vec![],
             LayerType::Softmax(_) => vec![],
             LayerType::Flatten(_) => vec![],
+            LayerType::LogSoftmax(_) => vec![],
+            LayerType::Gelu(_) => vec![],
+            LayerType::Softplus(_) => vec![],
+            LayerType::Elu(_) => vec![],
+            LayerType::Selu(_) => vec![],
+            LayerType::PReLU(layer) => layer.parameters_var(),
+            LayerType::Dropout(_) => vec![],
+            LayerType::Dropout2d(_) => vec![],
+            LayerType::DropConnect(_) => vec![],
+            LayerType::Conv2d(layer) => layer.parameters_var(),
+            LayerType::Conv1d(layer) => layer.parameters_var(),
+            LayerType::MaxPool2d(_) => vec![],
+            LayerType::MaxPool1d(_) => vec![],
+            LayerType::AvgPool1d(_) => vec![],
+            LayerType::AvgPool2d(_) => vec![],
+            LayerType::GlobalMaxPool2d(_) => vec![],
+            LayerType::GlobalAvgPool2d(_) => vec![],
+            LayerType::Placeholder(_) => vec![],
         }
     }
 }
@@ -543,8 +1349,26 @@ impl Sequential {
                 LayerType::ReLU(_) => add_layer_to_registry(Box::new(ReLU)),
                 LayerType::Sigmoid(_) => add_layer_to_registry(Box::new(Sigmoid)),
                 LayerType::Tanh(_) => add_layer_to_registry(Box::new(Tanh)),
-                LayerType::Softmax(_) => add_layer_to_registry(Box::new(Softmax)),
+                LayerType::Softmax(l) => add_layer_to_registry(Box::new(l.clone())),
                 LayerType::Flatten(_) => add_layer_to_registry(Box::new(Flatten)),
+                LayerType::LogSoftmax(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Gelu(_) => add_layer_to_registry(Box::new(Gelu)),
+                LayerType::Softplus(_) => add_layer_to_registry(Box::new(Softplus)),
+                LayerType::Elu(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Selu(_) => add_layer_to_registry(Box::new(Selu)),
+                LayerType::PReLU(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Dropout(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Dropout2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::DropConnect(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Conv2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Conv1d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::MaxPool2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::MaxPool1d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::AvgPool1d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::AvgPool2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::GlobalMaxPool2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::GlobalAvgPool2d(l) => add_layer_to_registry(Box::new(l.clone())),
+                LayerType::Placeholder(l) => add_layer_to_registry(Box::new(l.clone())),
             };
             layer_ids.push(layer_id);
         }
@@ -603,6 +1427,8 @@ impl Sequential {
                 // Check if layer is trainable (for LayerType, we need to check the inner layer)
                 let is_trainable = match layer {
                     LayerType::Linear(l) => l.is_trainable(),
+                    LayerType::PReLU(l) => l.is_trainable(),
+                    LayerType::Conv2d(l) => l.is_trainable(),
                     _ => false, // Activation layers have no parameters
                 };
                 if is_trainable {

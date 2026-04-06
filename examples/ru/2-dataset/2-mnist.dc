@@ -1,0 +1,29 @@
+
+import ml
+
+#  Загрузка наборов данных MNIST
+print("-"*10, "Пример 1", "-"*10)
+print("Загрузка наборов данных MNIST...")
+dataset_train = ml.load_mnist("train")
+dataset_test = ml.load_mnist("test")
+
+print("Размер обучающего набора: ", ml.shape(ml.dataset_features(dataset_train))[0])
+print("Размер тестового набора: ", ml.shape(ml.dataset_features(dataset_test))[0])
+print("-"*20)
+
+print("-"*10, "Пример 2", "-"*10)
+dataset_mnist = ml.load_dataset("mnist")
+dataset_train = dataset_mnist.split("train")
+dataset_test = dataset_mnist.split("test")
+
+print("Размер обучающего набора: ", ml.shape(ml.dataset_features(dataset_train))[0])
+print("Размер тестового набора: ", ml.shape(ml.dataset_features(dataset_test))[0])
+print("-"*20)
+
+print("-"*10, "Пример 3", "-"*10)
+dataset_mnist = ml.load_dataset("mnist")
+dataset_train, dataset_test = dataset_mnist.split(test_size=0.2, shuffle=true)
+
+print("Размер обучающего набора: ", ml.shape(ml.dataset_features(dataset_train))[0])
+print("Размер тестового набора: ", ml.shape(ml.dataset_features(dataset_test))[0])
+print("-"*20)

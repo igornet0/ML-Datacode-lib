@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use datacode_abi::AbiValue;
 use crate::ml_types::MlValueKind;
-use crate::vm_value::Value;
+use crate::vm_value::{ByteBuffer, Value};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -20,12 +20,15 @@ pub enum BridgeError {
 pub struct PluginAbiBridgeContext {
     /// Keeps `Object` handles alive for `abi_to_value` lookup after argument conversion.
     object_refs: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    /// Keeps `Rc<Vec<u8>>` alive for `AbiValue::Bytes` pointers into `ByteBuffer` storage.
+    byte_keepalive: Vec<Rc<Vec<u8>>>,
 }
 
 impl PluginAbiBridgeContext {
     pub fn new() -> Self {
         Self {
             object_refs: Vec::new(),
+            byte_keepalive: Vec::new(),
         }
     }
 
@@ -49,6 +52,15 @@ impl PluginAbiBridgeContext {
                 Ok(AbiValue::Str(ptr))
             }
             Value::Null => Ok(AbiValue::Null),
+            Value::ByteBuffer(bb) => {
+                let ptr = if bb.len == 0 {
+                    std::ptr::null()
+                } else {
+                    bb.bytes.as_ptr().wrapping_add(bb.offset)
+                };
+                self.byte_keepalive.push(Rc::clone(&bb.bytes));
+                Ok(AbiValue::Bytes { ptr, len: bb.len })
+            }
             Value::Tensor(id) => Ok(AbiValue::PluginOpaque {
                 tag: MlValueKind::Tensor as u8,
                 id: *id,
@@ -77,9 +89,13 @@ impl PluginAbiBridgeContext {
             Value::ObjectPtr(_) => Err(BridgeError::Unrepresentable(
                 "ObjectPtr cannot be converted to ABI",
             )),
-            Value::Path(_) => Err(BridgeError::Unrepresentable(
-                "Path is not representable in ABI",
-            )),
+            Value::Path(p) => {
+                let s = p.to_string_lossy();
+                let cstr = CString::new(s.as_ref()).map_err(|_| BridgeError::InvalidUtf8)?;
+                let ptr = cstr.as_ptr();
+                std::mem::forget(cstr);
+                Ok(AbiValue::Str(ptr))
+            }
         }
     }
 
@@ -172,6 +188,16 @@ impl PluginAbiBridgeContext {
                     Value::Array(Rc::new(RefCell::new(header_values))),
                     Value::Array(Rc::new(RefCell::new(rows_vec))),
                 ]))))
+            }
+            AbiValue::Bytes { ptr, len } => {
+                if len == 0 {
+                    return Ok(Value::ByteBuffer(ByteBuffer::from_vec(Vec::new())));
+                }
+                if ptr.is_null() {
+                    return Err(BridgeError::InvalidHandle);
+                }
+                let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+                Ok(Value::ByteBuffer(ByteBuffer::from_vec(slice.to_vec())))
             }
         }
     }

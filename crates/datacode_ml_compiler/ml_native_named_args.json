@@ -1,0 +1,86 @@
+{
+  "param_lists": {
+    "train": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "x_val",
+      "y_val"
+    ],
+    "nn_train": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "x_val",
+      "y_val"
+    ],
+    "train_sh": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "monitor",
+      "patience",
+      "min_delta",
+      "restore_best",
+      "x_val",
+      "y_val"
+    ],
+    "nn_train_sh": [
+      "nn",
+      "x",
+      "y",
+      "epochs",
+      "batch_size",
+      "learning_rate",
+      "loss",
+      "optimizer",
+      "monitor",
+      "patience",
+      "min_delta",
+      "restore_best",
+      "x_val",
+      "y_val"
+    ],
+    "freeze": [],
+    "unfreeze": [],
+    "native_dataset_split": [
+      "test_size",
+      "train_size",
+      "shuffle",
+      "random_state",
+      "stratify",
+      "return_indices"
+    ],
+    "native_dataset_split_fold": [
+      "split"
+    ],
+    "native_dataset_push_data": [
+      "features",
+      "targets"
+    ],
+    "native_dataset_concat": [
+      "other"
+    ]
+  },
+  "aliases": {
+    "nn_train": "train",
+    "train": "train",
+    "nn_train_sh": "train_sh",
+    "train_sh": "train_sh"
+  }
+}

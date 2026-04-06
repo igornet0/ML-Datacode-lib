@@ -23,7 +23,7 @@ fn test_single_linear_layer() {
     
     assert_eq!(output.shape, vec![2, 5]);
     
-    for &val in &output.data {
+    for &val in output.as_slice() {
         assert!(val.is_finite(), "Output value is not finite: {}", val);
     }
 }
@@ -57,18 +57,18 @@ fn test_mlp_forward_pass() {
     assert_eq!(output.shape, vec![2, 10]);
     
     // Check that output values are finite
-    for (i, &val) in output.data.iter().enumerate() {
+    for (i, &val) in output.as_slice().iter().enumerate() {
         if !val.is_finite() {
             // Print some debug info
             eprintln!("Output value at index {} is not finite: {}", i, val);
             eprintln!("Output shape: {:?}", output.shape);
-            eprintln!("First 10 output values: {:?}", &output.data[0..10.min(output.data.len())]);
+            eprintln!("First 10 output values: {:?}", &output.as_slice()[0..10.min(output.numel())]);
             panic!("Output value at index {} is not finite: {}", i, val);
         }
     }
     
     // Check that output is not all zeros (should have some variation)
-    let sum: f32 = output.data.iter().sum();
+    let sum: f32 = output.as_slice().iter().copied().sum();
     assert!(sum.abs() > 1e-6, "Output sum should not be zero, got {}", sum);
 }
 
@@ -78,7 +78,7 @@ fn test_mlp_with_softmax() {
     let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
     let linear2 = Linear::new(128, 10, true).unwrap();
-    let softmax = Softmax;
+    let softmax = Softmax::new();
     
     use ml::layer::LayerType;
     let sequential = Sequential::new(vec![
@@ -105,7 +105,7 @@ fn test_mlp_with_softmax() {
     for i in 0..2 {
         let start = i * 10;
         let end = start + 10;
-        let sum: f32 = output.data[start..end].iter().sum();
+        let sum: f32 = output.as_slice()[start..end].iter().copied().sum();
         assert!((sum - 1.0).abs() < 1e-5, "Softmax output should sum to 1, got {}", sum);
     }
 }
@@ -116,7 +116,7 @@ fn test_mlp_training_step() {
     let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
     let linear2 = Linear::new(128, 10, true).unwrap();
-    let softmax = Softmax;
+    let softmax = Softmax::new();
     
     use ml::layer::LayerType;
     let sequential = Sequential::new(vec![
@@ -155,7 +155,7 @@ fn test_mlp_loss_decreases() {
     let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
     let linear2 = Linear::new(128, 10, true).unwrap();
-    let softmax = Softmax;
+    let softmax = Softmax::new();
     
     use ml::layer::LayerType;
     let sequential = Sequential::new(vec![
@@ -209,8 +209,8 @@ fn test_sparse_cross_entropy_loss() {
     let loss = sparse_softmax_cross_entropy_loss(&logits, &targets).unwrap();
     
     // Loss should be positive and finite
-    assert!(loss.data[0] > 0.0);
-    assert!(loss.data[0].is_finite());
+    assert!(loss.as_slice()[0] > 0.0);
+    assert!(loss.as_slice()[0].is_finite());
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_tensor_flatten() {
     
     // Should be [2, 784]
     assert_eq!(flattened.shape, vec![2, 784]);
-    assert_eq!(flattened.data.len(), 2 * 784);
+    assert_eq!(flattened.numel(), 2 * 784);
 }
 
 #[test]
@@ -236,6 +236,6 @@ fn test_tensor_reshape() {
     let reshaped = tensor.reshape(vec![2, 12]).unwrap();
     
     assert_eq!(reshaped.shape, vec![2, 12]);
-    assert_eq!(reshaped.data, data);
+    assert_eq!(reshaped.to_vec(), data);
 }
 

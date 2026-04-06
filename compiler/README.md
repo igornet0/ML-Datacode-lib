@@ -1,12 +1,17 @@
 # Compiler metadata (DataCode)
 
-Применение изменений в репозиторий DataCode: [integration/README.md](integration/README.md) и патч [integration/datacode_ml_named_args.patch](integration/datacode_ml_named_args.patch).
+Имена параметров для разрешения **именованных** аргументов в компиляторе `data-code` задаются в **этом репозитории**:
 
-`ml_native_named_args.json` — имена параметров для разрешения **именованных и позиционных** аргументов в компиляторе `data-code` (через crate `datacode_ml_compiler`).
+- **Источник правды:** `crates/datacode_ml_compiler/ml_native_named_args.json`
+- **Crate:** `crates/datacode_ml_compiler/`
 
-Источник правды: этот JSON + crate `crates/datacode_ml_compiler`. В корневом пакете `data-code` (`src/compiler/natives.rs`) вызывается `datacode_ml_compiler::native_named_arg_params`.
+Корневой пакет `data-code` в монорепо подключает `datacode_ml_compiler` по path к этому каталогу. Рантайм-плагин `ml` линкуется с VM только через **ABI + `datacode_sdk`**; этот crate нужен только компилятору хоста.
 
-Структура:
+Интеграция в корень DataCode: [integration/README.md](integration/README.md), патч [integration/datacode_ml_named_args.patch](integration/datacode_ml_named_args.patch).
 
-- `param_lists` — ключи логических сигнатур (`train`, `train_sh`, `freeze`, `unfreeze`, …) и упорядоченные имена параметров. Для `train` / `train_sh` первый параметр — `nn` (объект модели для `model.train(...)`). Пустой массив — только receiver, без явных аргументов (методы слоя `freeze` / `unfreeze`).
-- `aliases` — какие имена функций/методов в языке отображаются на какую сигнатуру (`nn_train` → `train` и т.д.).
+Структура JSON:
+
+- `param_lists` — ключи сигнатур (`train`, `train_sh`, `freeze`, `native_dataset_split`, …).
+- `aliases` — отображение имён (`nn_train` → `train` и т.д.).
+
+Ключ `native_dataset_split` — kwargs для `dataset.split(...)` / `native_dataset_split`; порядок совпадает с [`DATASET_SPLIT_NAMED_ARG_NAMES`](../src/dataset_split_abi.rs).
