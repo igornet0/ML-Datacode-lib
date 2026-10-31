@@ -10,7 +10,31 @@ Standalone ML sources for DataCode (mirrors `src/lib/ml` in the main DataCode re
 dpm add ml
 ```
 
-`dpm` resolves `git+...` from the registry and clones into `<env>/packages/ml/`.
+`dpm` downloads a prebuilt `.dcmodule` bundle for your platform from the [GitHub Releases](https://github.com/igornet0/ML-Datacode-lib/releases) (checked against the `sha256` in the registry) and installs it into `<env>/packages/ml/`. Prebuilt targets:
+
+| Platform | Target | Backend |
+|---|---|---|
+| macOS arm64 | `aarch64-apple-darwin` | CPU + Metal |
+| macOS x86_64 | `x86_64-apple-darwin` | CPU + Metal |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | CPU |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | CPU |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | CPU |
+
+If there is no bundle for your platform, `dpm` falls back to cloning the repo and building it from source (needs a Rust toolchain).
+
+### CUDA
+
+The prebuilt Linux/Windows bundles are CPU-only. If you need CUDA, install from source:
+
+```bash
+DPM_FROM_SOURCE=1 dpm add ml
+```
+
+This clones the repo and builds it with `cargo` on your machine. `setup.dcmodule` tries the CUDA build first and falls back to CPU if the CUDA toolkit is not found.
+
+### Releasing
+
+Push a tag `vX.Y.Z` that matches `Cargo.toml`. The `release` workflow builds every target, publishes the bundles and `registry-artifacts.json`, and that JSON goes into the `artifacts` field of the `ml` entry in the registry `config.json`.
 
 ## Native module `import ml`
 
