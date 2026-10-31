@@ -91,6 +91,7 @@ fn catalog_len_before_split_returns_null() {
 
 /// Сценарий как в `datasets_manager::tests::resolve_with_native_module_ml_root_env`: `dist/ml-metal` и MNIST.
 #[test]
+#[ignore = "requires MNIST files in dist/ml-metal/datasets_rep"]
 fn load_dataset_split_train_materializes_mnist() {
     let ml_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/ml-metal");
     std::env::set_var(

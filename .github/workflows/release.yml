@@ -1,0 +1,96 @@
+# Prebuilt .dcmodule bundles for the DataCode registry (`artifacts` field).
+# Push a tag vX.Y.Z (must match Cargo.toml version) -> builds every target and
+# creates a GitHub Release with the bundles, .sha256 files and registry-artifacts.json.
+# Linux/Windows bundles are CPU builds; CUDA users install with DPM_FROM_SOURCE=1.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ABI_MAJOR: 1
+  ABI_MINOR: 7
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, features: metal, lib: libml.dylib }
+          - { os: macos-latest, target: x86_64-apple-darwin, features: metal, lib: libml.dylib }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, features: "", lib: libml.so }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, features: "", lib: libml.so }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, features: "", lib: ml.dll }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init datacode_sdk submodule
+        run: git submodule update --init --recursive datacode_sdk
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version
+        id: ver
+        run: |
+          v=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $v"; exit 1
+          fi
+      - name: Build
+        run: |
+          feat=()
+          [[ -n "${{ matrix.features }}" ]] && feat=(--features "${{ matrix.features }}")
+          cargo build --release --lib --target ${{ matrix.target }} "${feat[@]}"
+      - name: Pack
+        run: |
+          python scripts/pack_dcmodule.py \
+            --lib "target/${{ matrix.target }}/release/${{ matrix.lib }}" \
+            --target ${{ matrix.target }} \
+            --version ${{ steps.ver.outputs.version }} \
+            --abi-major $ABI_MAJOR --abi-minor $ABI_MINOR \
+            --out-dir dist \
+            --url-base "https://github.com/${{ github.repository }}/releases/download/v${{ steps.ver.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dcmodule-${{ matrix.target }}
+          path: |
+            dist/*.dcmodule
+            dist/*.sha256
+            dist/artifact-*.json
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Registry snippet
+        run: |
+          jq -s 'sort_by(.target)' out/artifact-*.json > out/registry-artifacts.json
+          cat out/registry-artifacts.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.dcmodule
+            out/*.sha256
+            out/registry-artifacts.json
+          generate_release_notes: true

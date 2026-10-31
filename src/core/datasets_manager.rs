@@ -277,6 +277,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "requires MNIST files in dist/ml-metal/datasets_rep (run `make build-metal` + datasets)"]
     fn resolve_with_native_module_ml_root_env() {
         let ml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/ml-metal");
         std::env::set_var(
@@ -288,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires MNIST files in dist/ml-metal/datasets_rep (run `make build-metal` + datasets)"]
     fn resolve_dataset_paths_mnist_matches_resolve_mnist_paths() {
         let ml_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/ml-metal");
         std::env::set_var(

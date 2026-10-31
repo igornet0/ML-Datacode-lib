@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "module_name": "ml",
-  "package_version": "0.1.1",
+  "package_version": "0.1.2",
   "hooks": {
     "pre_build": "make install"
   },
@@ -12,11 +12,11 @@
     },
     {
       "when": { "os": ["linux"] },
-      "command": "cargo build --release --features cuda"
+      "command": "cargo build --release --features cuda || cargo build --release"
     },
     {
       "when": { "os": ["windows"] },
-      "command": "cargo build --release --features cuda"
+      "command": "cargo build --release --features cuda || cargo build --release"
     }
   ],
   "install": [
