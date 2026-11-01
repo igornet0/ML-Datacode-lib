@@ -32,6 +32,16 @@ DPM_FROM_SOURCE=1 dpm add ml
 
 This clones the repo and builds it with `cargo` on your machine. `setup.dcmodule` tries the CUDA build first and falls back to CPU if the CUDA toolkit is not found.
 
+### Datasets
+
+`load_mnist` / `load_cifar10` / `load_cifar100` look for files in the package (`dist/datasets/...` or the `datasets_rep` submodule). If they are missing (e.g. a prebuilt install), the files are downloaded on first use from [ML-Datacode-datasets](https://github.com/igornet0/ML-Datacode-datasets) into the user cache:
+
+- macOS: `~/Library/Caches/datacode/ml/datasets/`
+- Linux: `$XDG_CACHE_HOME/datacode/ml/datasets/` (or `~/.cache/...`)
+- Windows: `%LOCALAPPDATA%\datacode\ml\datasets\`
+
+Override the cache location with `DATACODE_ML_DATASETS_DIR`.
+
 ### Releasing
 
 Push a tag `vX.Y.Z` that matches `Cargo.toml`. The `release` workflow builds every target, publishes the bundles and `registry-artifacts.json`, and that JSON goes into the `artifacts` field of the `ml` entry in the registry `config.json`.

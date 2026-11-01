@@ -1,13 +1,22 @@
-//! Управление наборами данных: файлы в `{DATACODE_DIST}/datasets/<name>`, при отсутствии — `make download-datasets-<target>`.
+//! Управление наборами данных: файлы в `{DATACODE_DIST}/datasets/<name>` (или `datasets_rep/datasets/<name>`),
+//! при отсутствии — загрузка из репозитория датасетов в пользовательский кэш.
 
 use std::env;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::datasets::{DatasetRelLayout, DatasetType};
 
 /// Совпадает с именем env, которое выставляет DataCode VM при загрузке `libml` (`DATACODE_NATIVE_MODULE_<NAME>_ROOT`).
 const ENV_PACKAGE_ROOT: &str = "DATACODE_NATIVE_MODULE_ML_ROOT";
+
+/// Переопределяет каталог кэша датасетов (внутри него — `datasets/<name>/...`).
+const ENV_DATASETS_DIR: &str = "DATACODE_ML_DATASETS_DIR";
+
+/// Репозиторий датасетов (тот же, что сабмодуль `datasets_rep`). `*.bin` хранятся в Git LFS.
+const DATASETS_RAW_BASE: &str = "https://raw.githubusercontent.com/igornet0/ML-Datacode-datasets/main/";
+const DATASETS_LFS_BASE: &str = "https://media.githubusercontent.com/media/igornet0/ML-Datacode-datasets/main/";
 
 /// Абсолютные пути к файлам датасета после успешного разрешения.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -65,11 +74,53 @@ fn resolve_under_root(root: &Path, layout: &DatasetRelLayout<'_>) -> Option<Reso
     }
 }
 
+/// `dist/datasets/mnist/x` -> `datasets/mnist/x` (раскладка репозитория датасетов и кэша).
+fn strip_dist(rel: &'static str) -> &'static str {
+    rel.find("datasets/").map_or(rel, |i| &rel[i..])
+}
+
+fn stripped_layout(layout: &DatasetRelLayout<'_>) -> (Vec<&'static str>, DatasetKindTag) {
+    match layout {
+        DatasetRelLayout::Mnist { images, labels } => {
+            (vec![strip_dist(images), strip_dist(labels)], DatasetKindTag::Mnist)
+        }
+        DatasetRelLayout::Cifar10 { paths } => {
+            (paths.iter().map(|p| strip_dist(p)).collect(), DatasetKindTag::Cifar10)
+        }
+        DatasetRelLayout::Cifar100 { path } => (vec![strip_dist(path)], DatasetKindTag::Cifar100),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DatasetKindTag {
+    Mnist,
+    Cifar10,
+    Cifar100,
+}
+
+/// Проверяет `datasets/...` относительно `root` (кэш, `datasets_rep`).
+fn resolve_stripped(root: &Path, layout: &DatasetRelLayout<'_>) -> Option<ResolvedDatasetPaths> {
+    let (rels, kind) = stripped_layout(layout);
+    let mut files = all_files_exist(root, &rels)?;
+    Some(match kind {
+        DatasetKindTag::Mnist => {
+            let labels = files.pop()?;
+            let images = files.pop()?;
+            ResolvedDatasetPaths::Mnist { images, labels }
+        }
+        DatasetKindTag::Cifar10 => ResolvedDatasetPaths::Cifar10 { paths: files },
+        DatasetKindTag::Cifar100 => ResolvedDatasetPaths::Cifar100 { path: files.pop()? },
+    })
+}
+
 /// Пробует пути под корнем пакета, поднимаясь от `start` к предкам.
 fn try_resolve_walk_up(start: &Path, layout: &DatasetRelLayout<'_>) -> Option<ResolvedDatasetPaths> {
     let mut p = start.to_path_buf();
     for _ in 0..12 {
         if let Some(res) = resolve_under_root(&p, layout) {
+            return Some(res);
+        }
+        if let Some(res) = resolve_stripped(&p.join("datasets_rep"), layout) {
             return Some(res);
         }
         if !p.pop() {
@@ -81,6 +132,12 @@ fn try_resolve_walk_up(start: &Path, layout: &DatasetRelLayout<'_>) -> Option<Re
 
 fn try_all_anchors(dataset: DatasetType, split: &str) -> Option<ResolvedDatasetPaths> {
     let layout = dataset.relative_layout_for_split(split)?;
+
+    if let Some(cache) = datasets_cache_dir() {
+        if let Some(p) = resolve_stripped(&cache, &layout) {
+            return Some(p);
+        }
+    }
 
     if let Ok(root) = env::var(ENV_PACKAGE_ROOT) {
         if let Some(p) = try_resolve_walk_up(Path::new(&root), &layout) {
@@ -123,70 +180,63 @@ fn try_all_anchors(dataset: DatasetType, split: &str) -> Option<ResolvedDatasetP
     None
 }
 
-fn find_makefile_root(start: &Path) -> Option<PathBuf> {
-    let mut p = start.to_path_buf();
-    for _ in 0..16 {
-        if p.join("Makefile").is_file() {
-            return Some(p);
-        }
-        if !p.pop() {
-            break;
-        }
+/// Каталог кэша: `$DATACODE_ML_DATASETS_DIR` или `<user cache>/datacode/ml`.
+fn datasets_cache_dir() -> Option<PathBuf> {
+    if let Some(d) = env::var_os(ENV_DATASETS_DIR).filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
     }
-    None
+    let base = if cfg!(target_os = "macos") {
+        env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches"))
+    } else if cfg!(windows) {
+        env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        env::var_os("XDG_CACHE_HOME")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+    }?;
+    Some(base.join("datacode").join("ml"))
 }
 
-fn first_make_root() -> Option<PathBuf> {
-    if let Ok(root) = env::var(ENV_PACKAGE_ROOT) {
-        if let Some(r) = find_makefile_root(&PathBuf::from(root)) {
-            return Some(r);
-        }
-    }
-    if let Some(parent) = dylib_parent_dir() {
-        if let Some(r) = find_makefile_root(&parent) {
-            return Some(r);
-        }
-    }
-    if let Some(r) = find_makefile_root(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))) {
-        return Some(r);
-    }
-    if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
-        if let Some(r) = find_makefile_root(&PathBuf::from(manifest_dir)) {
-            return Some(r);
-        }
-    }
-    if let Ok(cwd) = env::current_dir() {
-        if let Some(r) = find_makefile_root(&cwd) {
-            return Some(r);
-        }
-    }
-    None
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    let resp = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+    let mut body = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    Ok(body)
 }
 
-fn run_download_make(make_root: &Path, dataset: DatasetType) -> Result<(), String> {
-    let target = dataset.make_download_target();
-    let status = Command::new("make")
-        .current_dir(make_root)
-        .arg(format!("download-datasets-{target}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| {
-            format!(
-                "load_{}: could not run `make download-datasets-{target}` in {}: {}",
-                dataset.name(),
-                make_root.display(),
-                e
-            )
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "load_{}: `make download-datasets-{target}` failed in {} (status {})",
-            dataset.name(),
-            make_root.display(),
-            status
-        ));
+/// Скачивает один файл `datasets/...`; LFS-указатель с raw заменяется содержимым из media.
+fn download_file(rel: &str, dest: &Path) -> Result<(), String> {
+    let mut body = http_get(&format!("{DATASETS_RAW_BASE}{rel}"))?;
+    if body.starts_with(b"version https://git-lfs") {
+        body = http_get(&format!("{DATASETS_LFS_BASE}{rel}"))?;
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("part");
+    let mut f = fs::File::create(&tmp).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    f.write_all(&body)
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, dest).map_err(|e| format!("rename {}: {e}", dest.display()))
+}
+
+/// Скачивает недостающие файлы сплита в кэш.
+fn download_to_cache(dataset: DatasetType, split: &str, cache: &Path) -> Result<(), String> {
+    let layout = dataset
+        .relative_layout_for_split(split)
+        .ok_or_else(|| format!("load_{}: unknown split {split:?}", dataset.name()))?;
+    let (rels, _) = stripped_layout(&layout);
+    for rel in rels {
+        let dest = cache.join(rel);
+        if dest.is_file() {
+            continue;
+        }
+        eprintln!("[ml] downloading {rel} -> {}", dest.display());
+        download_file(rel, &dest).map_err(|e| format!("load_{}: download failed: {e}", dataset.name()))?;
     }
     Ok(())
 }
@@ -242,23 +292,22 @@ pub fn resolve_dataset_paths(dataset: DatasetType, split: &str) -> Result<Resolv
         return Ok(paths);
     }
 
-    let Some(make_root) = first_make_root() else {
+    let Some(cache) = datasets_cache_dir() else {
         let expected = expected_dir_hint(dataset);
         return Err(format!(
             "load_{}: dataset files not found under `{expected}` relative to the ml package root, \
-             and could not locate Makefile to run download. See datacode_sdk::module_dist.",
+             and no cache dir (set {ENV_DATASETS_DIR})",
             dataset.name()
         ));
     };
 
-    run_download_make(&make_root, dataset)?;
+    download_to_cache(dataset, split, &cache)?;
 
-    try_all_anchors(dataset, split).ok_or_else(|| {
+    resolve_stripped(&cache, &dataset.relative_layout_for_split(split).expect("split checked")).ok_or_else(|| {
         format!(
-            "load_{}: dataset still missing after `make download-datasets-{}` in {}",
+            "load_{}: dataset still missing after download into {}",
             dataset.name(),
-            dataset.make_download_target(),
-            make_root.display()
+            cache.display()
         )
     })
 }
@@ -304,6 +353,22 @@ mod tests {
             }
             _ => panic!("expected Mnist variant"),
         }
+    }
+
+    #[test]
+    #[ignore = "network: downloads MNIST test split from ML-Datacode-datasets"]
+    fn downloads_mnist_test_into_cache() {
+        let dir = std::env::temp_dir().join(format!("dc-ml-ds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        download_to_cache(DatasetType::Mnist, "test", &dir).expect("download");
+        let r = resolve_stripped(&dir, &DatasetType::Mnist.relative_layout_for_split("test").unwrap());
+        match r {
+            Some(ResolvedDatasetPaths::Mnist { images, .. }) => {
+                assert_eq!(std::fs::metadata(images).unwrap().len(), 7_840_016);
+            }
+            _ => panic!("expected Mnist variant"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
